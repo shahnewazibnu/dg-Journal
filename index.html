@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en" data-theme="fog" class="tf-classic">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Digital Journal</title>
+  <meta name="theme-color" content="#ECEEEA">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <script>
+    // Apply saved look settings before the page draws, so there is no flash.
+    try {
+      var s = JSON.parse(localStorage.getItem('dj-settings') || '{}'), r = document.documentElement;
+      var t = s.theme || 'fog';
+      if (t === 'auto') t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? (s.autoDark || 'midnight') : (s.autoLight || 'fog');
+      if (t === 'seasonal') { var m = new Date().getMonth(); t = m < 2 || m === 11 ? 'winter' : m < 5 ? 'spring' : m < 8 ? 'summer' : 'autumn'; }
+      if (localStorage.getItem('dj-lock')) r.classList.add('is-locked');
+      r.dataset.theme = t;
+      if (s.titleFont) r.classList.add('tf-' + s.titleFont);
+      r.dataset.paper = s.paper || 'plain';
+      r.dataset.frame = s.frame || 'none';
+      r.dataset.dropcap = s.dropcap === false ? 'off' : 'on';
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="lockScreen" class="lock-screen" hidden>
+    <form class="lock-card" id="lockForm" novalidate>
+      <svg class="lock-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>
+      <h1 id="lockHello">Welcome back</h1>
+      <p class="muted">Enter your passcode to open your journal.</p>
+      <input id="lockPass" class="text-input lock-input" type="password" autocomplete="current-password" aria-label="Passcode" placeholder="Passcode">
+      <p class="ed-error" id="lockError" role="alert"></p>
+      <button class="btn btn-primary lock-btn" type="submit" id="lockBtn">Unlock</button>
+      <button class="linkbtn" type="button" id="lockForgot">Forgot your passcode?</button>
+      <div class="lock-forgot" id="lockForgotBox" hidden>
+        <p>Your journal is encrypted with your passcode, so it can’t be reset. To start again, erase this journal and then import a backup file in Settings.</p>
+        <label class="field"><span>Type ERASE to confirm</span><input id="lockErase" class="text-input" type="text" autocomplete="off"></label>
+        <button class="btn btn-danger" type="button" id="lockEraseBtn">Erase this journal</button>
+      </div>
+    </form>
+  </div>
+  <!-- Ink texture used by the rubber-stamp date style -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <filter id="rough"><feTurbulence type="fractalNoise" baseFrequency="1.4" numOctaves="2" seed="3" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="1.6"/></filter>
+  </svg>
+
+  <div class="shell">
+    <nav class="rail" aria-label="Main">
+      <a class="brand" href="#/home">Digital Journal</a>
+      <a class="nav-link" data-nav="home" href="#/home">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z"/></svg>
+        <span>Home</span>
+      </a>
+      <a class="nav-link" data-nav="journal" href="#/journal">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>
+        <span>Journal</span>
+      </a>
+      <a class="nav-link" data-nav="calendar" href="#/calendar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>
+        <span>Calendar</span>
+      </a>
+      <a class="nav-link" data-nav="recap" href="#/recap">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>
+        <span>Recaps</span>
+      </a>
+      <a class="nav-link" data-nav="people" href="#/people">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9.5" r="2.5"/><path d="M15.8 14.6c2.3-.3 4.2 1.2 4.7 4"/></svg>
+        <span>People</span>
+      </a>
+      <a class="nav-link" data-nav="settings" href="#/settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></svg>
+        <span>Settings</span>
+      </a>
+      <a class="nav-link nav-help" data-nav="help" href="#/help">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.7"/><circle cx="12" cy="17" r=".6" fill="currentColor"/></svg>
+        <span>Tutorials</span>
+      </a>
+      <button class="btn btn-primary rail-new" type="button" data-action="new">New entry</button>
+      <button class="btn btn-ghost rail-lock" type="button" data-action="lock-now" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>Lock now
+      </button>
+    </nav>
+    <main id="view" tabindex="-1"></main>
+  </div>
+
+  <button class="fab" type="button" data-action="new" aria-label="New entry">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+
+  <dialog id="editor" aria-labelledby="edHeading">
+    <form id="editorForm" novalidate>
+      <header class="ed-head">
+        <button type="button" class="btn btn-ghost" data-ed="cancel">Cancel</button>
+        <h2 id="edHeading">New entry</h2>
+        <button type="submit" class="btn btn-primary" id="edSave">Save</button>
+      </header>
+      <div class="ed-body" id="edBody">
+        <div class="ed-draft" id="edDraft" hidden></div>
+        <div class="ed-top">
+          <label class="ed-date"><span>Date</span><input type="date" id="edDate" required></label>
+          <button type="button" class="ed-toggle" data-ed="fav" id="edFav" aria-pressed="false" title="Favorite">☆ Favorite</button>
+        </div>
+        <p class="ed-auto" id="edAuto" hidden></p>
+        <div class="ed-field">
+          <p class="ed-label" id="edMoodLabel">Mood <span id="edMoodName"></span></p>
+          <div class="ed-moods" id="edMoods" role="radiogroup" aria-labelledby="edMoodLabel"></div>
+        </div>
+        <div class="ed-photos" id="edPhotos"></div>
+        <label class="ed-add">
+          <input type="file" id="edFile" accept="image/*" multiple>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="13" rx="2"/><circle cx="9" cy="10.5" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5 4.5 4"/></svg>
+          <span>Add photos</span>
+        </label>
+        <p class="ed-hint">You can also drop or paste photos here. The first photo is the cover.</p>
+        <div id="edTitleWrap" class="ed-title-wrap">
+          <input id="edTitle" class="ed-title title-text" type="text" placeholder="Title (optional)" maxlength="140" autocomplete="off">
+        </div>
+        <div class="ed-fonts" id="edFonts" role="radiogroup" aria-label="Title font"></div>
+        <div class="ed-prompts" id="edPrompts"></div>
+        <textarea id="edText" class="ed-text" placeholder="What happened today?" rows="8"></textarea>
+        <div class="ed-field">
+          <p class="ed-label">Voice notes &amp; videos</p>
+          <div class="ed-media" id="edMedia"></div>
+          <div class="row-tight">
+            <button type="button" class="btn btn-line" data-ed="record">● Record a voice note</button>
+            <label class="btn btn-line ed-vid"><input type="file" id="edVideo" accept="video/*">🎬 Add a video</label>
+          </div>
+        </div>
+        <div class="ed-field">
+          <p class="ed-label">Song of the day</p>
+          <div class="ed-song">
+            <input id="edSongTitle" class="text-input" type="text" placeholder="Song" maxlength="120" autocomplete="off">
+            <input id="edSongArtist" class="text-input" type="text" placeholder="Artist" maxlength="120" autocomplete="off">
+            <input id="edSongLink" class="text-input" type="url" placeholder="Link (Spotify, YouTube…), optional" maxlength="500" autocomplete="off">
+          </div>
+        </div>
+        <div class="ed-field">
+          <p class="ed-label">Who was there</p>
+          <div class="ed-people" id="edPeople"></div>
+        </div>
+        <div class="ed-field">
+          <p class="ed-label">Tags</p>
+          <div class="ed-tags" id="edTags"></div>
+        </div>
+        <div class="ed-field">
+          <p class="ed-label"><label for="edPlace">Where</label></p>
+          <div class="ed-place-row">
+            <select id="edPlace" class="text-input"></select>
+            <button type="button" class="btn btn-line" data-ed="new-place">New place</button>
+          </div>
+        </div>
+        <div class="ed-field">
+          <p class="ed-label" id="edTintLabel">Entry color</p>
+          <div class="ed-tints" id="edTints" role="radiogroup" aria-labelledby="edTintLabel"></div>
+        </div>
+        <p class="ed-error" id="edError" role="alert"></p>
+        <div class="ed-danger" id="edDanger">
+          <button type="button" class="btn btn-danger" data-ed="delete">Delete entry</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="personDlg" class="mini" aria-labelledby="pdHeading">
+    <form id="personForm" novalidate>
+      <header class="ed-head">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <h2 id="pdHeading">New person</h2>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </header>
+      <div class="mini-body">
+        <label class="avatar-pick">
+          <input type="file" id="pdFile" accept="image/*">
+          <span class="avatar xl" id="pdAvatar"></span>
+          <span class="link">Choose photo</span>
+        </label>
+        <label class="field"><span>Name</span><input id="pdName" class="text-input" type="text" maxlength="60" autocomplete="off" required></label>
+        <p class="ed-error" id="pdError" role="alert"></p>
+        <div class="ed-danger" id="pdDanger"><button type="button" class="btn btn-danger" data-pd="delete">Delete person</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="placeDlg" class="mini" aria-labelledby="plHeading">
+    <form id="placeForm" novalidate>
+      <header class="ed-head">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <h2 id="plHeading">New place</h2>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </header>
+      <div class="mini-body">
+        <label class="field"><span>Name</span><input id="plName" class="text-input" type="text" maxlength="80" placeholder="Library, Mom’s house, Lake Thunderbird…" autocomplete="off" required></label>
+        <label class="field"><span>Address or Google Maps link</span><input id="plAddr" class="text-input" type="text" maxlength="500" placeholder="Paste a link or type an address" autocomplete="off"></label>
+        <div class="row-tight">
+          <button type="button" class="btn btn-line" data-pl="locate">Use my current location</button>
+          <span class="muted" id="plStatus"></span>
+        </div>
+        <div class="map-box" id="plMap"></div>
+        <p class="ed-error" id="plError" role="alert"></p>
+        <div class="ed-danger" id="plDanger"><button type="button" class="btn btn-danger" data-pl="delete">Delete place</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="passDlg" class="mini" aria-labelledby="psHeading">
+    <form id="passForm" novalidate>
+      <header class="ed-head">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <h2 id="psHeading">Set a passcode</h2>
+        <button type="submit" class="btn btn-primary" id="psSave">Save</button>
+      </header>
+      <div class="mini-body" id="psBody"></div>
+    </form>
+  </dialog>
+
+  <dialog id="quickDlg" class="mini" aria-labelledby="qcHeading">
+    <form id="quickForm" novalidate>
+      <header class="ed-head">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <h2 id="qcHeading">Snap &amp; save</h2>
+        <button type="submit" class="btn btn-primary" id="qcSave">Save</button>
+      </header>
+      <div class="mini-body">
+        <div class="qc-photo" id="qcPhoto">
+          <label class="btn btn-line"><input type="file" id="qcCamera" accept="image/*" capture="environment" hidden>Take photo</label>
+          <label class="btn btn-line"><input type="file" id="qcPick" accept="image/*" hidden>Choose photo</label>
+        </div>
+        <input id="qcLine" class="text-input qc-line" type="text" maxlength="140" placeholder="One line about it" autocomplete="off">
+        <div class="ed-moods qc-moods" id="qcMoods" role="radiogroup" aria-label="Mood"></div>
+        <p class="muted" id="qcInfo"></p>
+        <p class="ed-error" id="qcError" role="alert"></p>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="tagDlg" class="mini" aria-labelledby="tgHeading">
+    <form id="tagForm" novalidate>
+      <header class="ed-head">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <h2 id="tgHeading">New tag</h2>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </header>
+      <div class="mini-body">
+        <label class="field"><span>Name</span><input id="tgName" class="text-input" type="text" maxlength="40" autocomplete="off" required></label>
+        <div class="field"><span>Color</span><div class="ed-tints" id="tgColors" role="radiogroup" aria-label="Tag color"></div></div>
+        <p class="ed-error" id="tgError" role="alert"></p>
+        <div class="ed-danger" id="tgDanger"><button type="button" class="btn btn-danger" data-tg="delete">Delete tag</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="lightbox" aria-label="Photo viewer">
+    <img id="lbImg" alt="">
+    <video id="lbVideo" controls playsinline hidden></video>
+    <button type="button" class="lb-btn lb-close" data-lb="close" aria-label="Close">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+    <button type="button" class="lb-btn lb-prev" data-lb="prev" aria-label="Previous photo">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <button type="button" class="lb-btn lb-next" data-lb="next" aria-label="Next photo">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+    </button>
+    <p class="lb-count" id="lbCount"></p>
+  </dialog>
+
+  <div id="tray" class="tray" hidden></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="core.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
