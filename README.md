@@ -1,4 +1,4 @@
-# Digital Journal: web app (v0.6)
+# Digital Journal: web app (v0.7)
 
 A private photo journal: entries with photos, text and a date, a calendar with photo thumbnails, and month and year recaps.
 
@@ -8,7 +8,18 @@ Double-click `index.html`. It opens in your default browser (Chrome or Edge work
 
 Keyboard shortcut: press **N** anywhere to start a new entry.
 
-## What's new in v0.6
+## What's new in v0.7: Watch list
+
+- **Watch list** in the sidebar, with three sections: **Anime**, **Movies** and **TV series**.
+- **+ Add** suggests titles with pictures as you type: anime from MyAnimeList (through the free Jikan service), TV series from TVmaze, movies from Wikipedia. No account or key is needed; only the name you type is sent. Offline, or if nothing matches, you can add it by name only.
+- Add as **Watching** or **Watch later**. Cards have **▶ Start watching**, an **episode counter**, and **✓ Finished watching**.
+- **Ratings out of 5 with fractions:** click exactly where you want on the stars (for example 4.3).
+- **Watch calendar:** each show is a bar from the day you started to the day you finished.
+- **Details:** status, dates, episodes, notes, your own picture, and **Watch again** (earlier watches stay on the calendar).
+- **Watching now** strip on the Home page. The watch list is included in backups and encrypted with your passcode.
+- Photos in the entry editor can be **dragged into any order**, and any photo can be made the cover.
+
+## What was new in v0.6
 
 - **Phone app for Android** (the `phone` folder). It only adds entries: **Quick entry** (one photo and a line) and **New entry** (date, photos, title, text, mood, tags, people, place, voice note, video, song, favorite). It keeps nothing: each entry is locked so only your PC can open it, sent through a hidden folder in your Google Drive, and deleted from the phone once sent. The phone keeps only your tag, people and place names so you can tap them.
 - **Receiving on the PC:** new phone entries arrive by themselves when the journal opens, and every couple of minutes while it's open.

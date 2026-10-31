@@ -1,5 +1,5 @@
 // Offline support when the app is served from a web address (not used for file://).
-const CACHE = 'journal-v9';
+const CACHE = 'journal-v11';
 const SHELL = ['./', './index.html', './styles.css', './core.js', './app.js', './lib/qrcode.js', './manifest.webmanifest', './icons/icon.svg', './lib/leaflet/leaflet.js', './lib/leaflet/leaflet.css', './lib/html-to-image.js', './lib/fonts-embed.js', './fonts/literata-latin-opsz-normal.woff2', './fonts/manrope-latin-wght-normal.woff2', './fonts/playfair-display-latin-wght-normal.woff2', './fonts/caveat-latin-wght-normal.woff2', './fonts/dancing-script-latin-wght-normal.woff2', './fonts/special-elite-latin-400-normal.woff2', './fonts/patrick-hand-latin-400-normal.woff2', './fonts/abril-fatface-latin-400-normal.woff2', './fonts/pacifico-latin-400-normal.woff2'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {

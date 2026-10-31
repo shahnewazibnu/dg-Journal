@@ -242,7 +242,7 @@
   const DB = (() => {
     let dbp;
     const open = () => dbp || (dbp = new Promise((res, rej) => {
-      const r = indexedDB.open('digital-journal', 3);
+      const r = indexedDB.open('digital-journal', 4);
       r.onupgradeneeded = () => {
         const db = r.result;
         if (!db.objectStoreNames.contains('entries')) db.createObjectStore('entries', { keyPath: 'id' }).createIndex('date', 'date');
@@ -250,6 +250,7 @@
         if (!db.objectStoreNames.contains('people')) db.createObjectStore('people', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('places')) db.createObjectStore('places', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('tags')) db.createObjectStore('tags', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('watch')) db.createObjectStore('watch', { keyPath: 'id' });
       };
       r.onblocked = () => toast('Close other tabs with the journal open, then reload this page.', 6000);
       r.onsuccess = () => { const db = r.result; db.onversionchange = () => db.close(); res(db); };
@@ -281,6 +282,7 @@
       allPeople: () => all('people'),
       allPlaces: () => all('places'),
       allTags: () => all('tags'),
+      allWatch: () => all('watch'),
       getPhoto: async (id) => unseal('photos', await rawGet('photos', id)),
       putPhoto: async (rec) => rawPut('photos', await seal('photos', rec)),
       put: async (store, rec) => rawPut(store, await seal(store, rec)),
@@ -301,8 +303,8 @@
       }),
       putMany: async (data) => {
         const S = {};
-        for (const store of ['entries', 'people', 'places', 'tags']) S[store] = await Promise.all((data[store] || []).map((r) => seal(store, r)));
-        await tx(['entries', 'people', 'places', 'tags'], 'readwrite', (t) => { for (const store in S) S[store].forEach((r) => t.objectStore(store).put(r)); });
+        for (const store of ['entries', 'people', 'places', 'tags', 'watch']) S[store] = await Promise.all((data[store] || []).map((r) => seal(store, r)));
+        await tx(['entries', 'people', 'places', 'tags', 'watch'], 'readwrite', (t) => { for (const store in S) S[store].forEach((r) => t.objectStore(store).put(r)); });
         // Photos one at a time so a big import doesn't hold everything twice in memory
         for (const p of data.photos || []) await rawPut('photos', await seal('photos', p));
       },
@@ -311,7 +313,7 @@
   // Re-write every record encrypted (turning the lock on) or in the clear (turning it off)
   async function recryptAll(toKey, progress) {
     const fromKey = CRYPT.key;
-    for (const store of ['entries', 'people', 'places', 'tags', 'photos']) {
+    for (const store of ['entries', 'people', 'places', 'tags', 'watch', 'photos']) {
       const ids = await DB.keys(store);
       let i = 0;
       for (const id of ids) {
@@ -378,6 +380,7 @@
 
   // ---------- App state ----------
   let entries = [];           // all entry records (no image data), newest first
+  let watch = [];             // watch list: anime, movies and TV series
   let people = [];            // { id, name, photo: Blob|null, createdAt }
   let places = [];            // { id, name, addr, lat, lng, link, createdAt }
   const avatarURL = new Map();
@@ -503,6 +506,7 @@
       case 'book': renderBook(); break;
       case 'print': renderPrint(arg); break;
       case 'help': renderHelp(arg); break;
+      case 'watch': renderWatch(arg); break;
       default: renderHome();
     }
     const done = () => {
@@ -738,6 +742,7 @@
       ${storyCardHTML()}
       ${weekCardHTML()}
       ${pinnedHTML()}
+      ${watchingHomeHTML()}
       ${heroHTML()}
       <section class="home-sec"><header><h2>On this day</h2></header>${otdHTML}</section>
       ${week.length ? `<section class="home-sec"><header><h2>This week in past years</h2></header><div class="mem-row">${week.map((e) => memCard(e, true)).join('')}</div></section>` : ''}
@@ -2052,10 +2057,10 @@
     toast(`Backup exported: ${plural(count, 'entry', 'entries')}${lockOn() ? ' (encrypted)' : ''}`);
   }
   async function makeBackup() {
-    const [ents, ppl, pls, tgs] = await Promise.all([DB.allEntries(), DB.allPeople(), DB.allPlaces(), DB.allTags()]);
+    const [ents, ppl, pls, tgs, wl] = await Promise.all([DB.allEntries(), DB.allPeople(), DB.allPlaces(), DB.allTags(), DB.allWatch()]);
     const pplOut = [];
     for (const p of ppl) pplOut.push({ id: p.id, name: p.name, createdAt: p.createdAt, photo: p.photo ? await blobToDataURL(p.photo) : null });
-    const parts = [`{"app":"digital-journal","version":3,"exportedAt":"${new Date().toISOString()}","entries":${JSON.stringify(ents)},"people":${JSON.stringify(pplOut)},"places":${JSON.stringify(pls)},"tags":${JSON.stringify(tgs)},"photos":[`];
+    const parts = [`{"app":"digital-journal","version":3,"exportedAt":"${new Date().toISOString()}","entries":${JSON.stringify(ents)},"people":${JSON.stringify(pplOut)},"places":${JSON.stringify(pls)},"tags":${JSON.stringify(tgs)},"watch":${JSON.stringify(wl)},"photos":[`];
     // Photos one at a time (decrypting each if the journal is locked), skipping unsaved draft photos
     let first = true;
     for (const id of await DB.keys('photos')) {
@@ -2105,7 +2110,8 @@
       const newTags = [];
       for (const t of tgs) { const ex = byName.get(t.name.toLowerCase()); if (ex && ex !== t.id) remap.set(t.id, ex); else { newTags.push(t); byName.set(t.name.toLowerCase(), t.id); } }
       if (remap.size) ents.forEach((e) => { e.tags = [...new Set(e.tags.map((id) => remap.get(id) || id))]; });
-      await DB.putMany({ entries: ents, photos, people: ppl, places: pls, tags: newTags });
+      const wl = (data.watch || []).filter((w) => w && w.id && w.title && ['anime', 'movie', 'tv'].includes(w.kind)).map((w) => ({ ...w, info: w.info || {}, history: Array.isArray(w.history) ? w.history : [] }));
+      await DB.putMany({ entries: ents, photos, people: ppl, places: pls, tags: newTags, watch: wl });
       photos.forEach((p) => forgetPhoto(p.id));
       await loadAll();
       toast(`Imported ${plural(ents.length, 'entry', 'entries')}`);
@@ -2121,14 +2127,52 @@
   const edPhotos = $('#edPhotos');
 
   function renderEdPhotos() {
+    const ready = ed.photos.filter((p) => !p.pending).length;
     edPhotos.innerHTML = ed.photos.map((p, i) => `
-      <div class="ed-ph ${p.pending ? 'pending' : ''}" data-id="${p.id}">
-        ${p.url ? `<img src="${p.url}" alt="">` : ''}
+      <div class="ed-ph ${p.pending ? 'pending' : ''}${i === 0 && !p.pending ? ' is-cover' : ''}${edDrag && edDrag.on && edDrag.id === p.id ? ' dragging' : ''}" data-id="${p.id}"${p.pending ? '' : ` title="Drag to change the order"`}>
+        ${p.url ? `<img src="${p.url}" alt="" draggable="false">` : ''}
         ${p.pending ? '' : `<button type="button" class="x" data-ed="remove" data-id="${p.id}" aria-label="Remove photo">${ICON.x}</button>`}
-        ${i === 0 && !p.pending ? '<span class="badge">Cover</span>' : ''}
-        ${i > 0 && !p.pending ? `<button type="button" class="cv" data-ed="cover" data-id="${p.id}" aria-label="Use as cover photo">${ICON.star}</button>` : ''}
+        ${i === 0 && !p.pending ? '<span class="badge">★ Cover</span>' : ''}
+        ${i > 0 && !p.pending ? `<button type="button" class="cv" data-ed="cover" data-id="${p.id}" aria-label="Make this the cover photo">★ Make cover</button>` : ''}
+        ${!p.pending && ready > 1 ? `<span class="ed-pos" aria-hidden="true">${i + 1}</span>` : ''}
       </div>`).join('');
+    const hint = $('#edPhotoHint');
+    if (hint) hint.textContent = ready > 1 ? 'Drag photos to change their order. The first one is the cover, or click “Make cover” on any photo.' : 'You can also drop or paste photos here. The first photo is the cover.';
   }
+  // Drag photos in the editor to change their order (the first one is the cover)
+  let edDrag = null;
+  edPhotos.addEventListener('pointerdown', (ev) => {
+    const tile = ev.target.closest('.ed-ph');
+    if (!tile || tile.classList.contains('pending') || ev.target.closest('button') || ev.button > 0) return;
+    if (ed.photos.filter((p) => !p.pending).length < 2) return;
+    ev.preventDefault();
+    edDrag = { id: tile.dataset.id, x0: ev.clientX, y0: ev.clientY, on: false, pid: ev.pointerId };
+    try { edPhotos.setPointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
+  });
+  edPhotos.addEventListener('pointermove', (ev) => {
+    const d = edDrag; if (!d) return;
+    if (!d.on) {
+      if (Math.hypot(ev.clientX - d.x0, ev.clientY - d.y0) < 6) return;
+      d.on = true; edPhotos.classList.add('sorting'); renderEdPhotos();
+    }
+    const over = document.elementFromPoint(ev.clientX, ev.clientY);
+    const tile = over && over.closest('#edPhotos .ed-ph:not(.pending)');
+    if (!tile || tile.dataset.id === d.id) return;
+    const from = ed.photos.findIndex((p) => p.id === d.id), to = ed.photos.findIndex((p) => p.id === tile.dataset.id);
+    if (from < 0 || to < 0) return;
+    const [moved] = ed.photos.splice(from, 1);
+    ed.photos.splice(to, 0, moved);
+    ed.dirty = true;
+    renderEdPhotos();
+  });
+  const edDrop = () => {
+    if (!edDrag) return;
+    const was = edDrag.on; edDrag = null;
+    edPhotos.classList.remove('sorting');
+    if (was) { renderEdPhotos(); scheduleDraft(); }
+  };
+  edPhotos.addEventListener('pointerup', edDrop);
+  edPhotos.addEventListener('pointercancel', edDrop);
   function renderEdFonts() {
     $('#edTitleWrap').className = 'ed-title-wrap' + (ed.titleFont ? ' tf-' + ed.titleFont : '');
     $('#edFonts').innerHTML = [['', `Default (${fontName(settings.titleFont)})`], ...FONTS].map(([id, name]) =>
@@ -2330,7 +2374,7 @@
     }
     if (act === 'cover') {
       const i = ed.photos.findIndex((x) => x.id === b.dataset.id);
-      if (i > 0) { ed.photos.unshift(...ed.photos.splice(i, 1)); ed.dirty = true; renderEdPhotos(); }
+      if (i > 0) { ed.photos.unshift(...ed.photos.splice(i, 1)); ed.dirty = true; renderEdPhotos(); toast('Cover photo changed'); }
     }
     if (act === 'delete') {
       if (await deleteEntry(ed.entry)) { clearDraft(draftKey()); closeEditor(true); if (/^#\/entry\//.test(location.hash)) go('#/journal'); else route(); }
@@ -4033,7 +4077,7 @@
   const TUTS = [
     { id: 'start', icon: '📝', title: 'Write your first entry', sub: 'Photos, words, mood and more, in a minute', steps: [
       ['Start a new entry', 'Click <b>New entry</b> in the sidebar, or press <kbd>N</kbd> anywhere. On a phone-sized window, use the round <b>+</b> button.', 'home.webp', 'The Home page with the New entry button'],
-      ['Add photos, a mood and a title', 'Click <b>Add photos</b>, or drop or paste photos into the window. The first photo is the cover; tap the star on another photo to make it the cover. If a photo has a date or a location saved in it, the entry takes them automatically. Pick a mood, add a title, and choose a title font if you like.', 'editor.webp', 'The New entry window with photos, a mood and a title'],
+      ['Add photos, a mood and a title', 'Click <b>Add photos</b>, or drop or paste photos into the window. The first photo is the cover: click <b>★ Make cover</b> on any other photo to use it instead, or drag the photos to put them in any order. If a photo has a date or a location saved in it, the entry takes them automatically. Pick a mood, add a title, and choose a title font if you like.', 'editor.webp', 'The New entry window with photos, a mood and a title'],
       ['Add the rest (all optional)', 'Write as much or as little as you like. You can also record a <b>voice note</b>, add a <b>video</b>, set a <b>song of the day</b>, and choose <b>who was there</b>, <b>tags</b>, the <b>place</b> and an <b>entry color</b>. Click <b>Save</b>. If you close the window by accident, your draft is kept.', 'editor2.webp', 'More fields: voice notes, video, song, people, tags and place'],
       ['Your journal page', 'Every entry becomes a page. Under it: <b>Edit entry</b> changes the words and photos, <b>Edit page</b> decorates the page, <b>Share as image</b> saves the page as a picture, <b>Favorite</b> stars it, and <b>Pin to Home</b> keeps it on your Home page.', 'entry.webp', 'A saved journal page'],
     ] },
@@ -4079,6 +4123,13 @@
       ['Sent', 'Once sent, nothing is left on the phone. It arrives in your journal the next time it’s open on your PC, and within a couple of minutes while it’s open.', 'p-sent.webp', 'Everything has been sent'],
       ['If the PC asks you to connect', 'Google’s sign-in pass lasts about an hour. The journal renews it by itself when it opens; if it can’t, the Home page shows <b>Connect Google Drive</b>. One click and your phone entries come in.', 'home-banner.webp', 'The Connect Google Drive note on Home'],
       ['Phone settings', 'Tap ⚙︎ on the phone to choose photo quality, update the names from your PC, add the app to your home screen, or disconnect the phone.', 'p-settings.webp', 'The phone app’s settings'],
+    ] },
+    { id: 'watch', icon: '📺', title: 'Watch list', sub: 'Anime, movies and TV series, with ratings and a watch calendar', steps: [
+      ['Add something', 'Open <a href="#/watch">Watch list</a> and click <b>+ Add</b>. Choose <b>Anime</b>, <b>Movies</b> or <b>TV series</b> and start typing the name. Suggestions with pictures appear (from MyAnimeList, TVmaze or Wikipedia; only the name you type is sent to them). Pick the right one, or choose <b>Add “…” by name only</b>. Then choose <b>Watching</b> (it starts on the watch calendar today) or <b>Watch later</b>, and click <b>Add</b>.', 'watch-add.webp', 'Adding an anime with suggestions'],
+      ['Keep track while you watch', 'Each show has a card. For anime and TV series, use <b>−</b> and <b>+</b> to count episodes. When you’re done, click <b>✓ Finished watching</b>. Things saved for later have <b>▶ Start watching</b>.', 'watch-list.webp', 'A show being watched, with the episode counter'],
+      ['Rate it', 'Finished shows have five stars. Click exactly where you want: near the end of the fourth star gives about 3.8, the middle of the fifth gives 4.5. Fractions are fine. Click again to change it.', 'watch-rate.webp', 'A finished movie rated 4.3 stars'],
+      ['Details, dates and notes', 'Click a poster to open its details. You can change the status, the start and finish dates, episodes, your rating, and add notes. Click the picture to use your own. Finished shows have <b>↻ Watch again</b>, which keeps the earlier dates.', 'watch-details.webp', 'The details window'],
+      ['The watch calendar', 'Click <b>Calendar</b> at the top of the Watch list. Each show is a bar from the day you started to the day you finished; shows you’re still watching run up to today. Pink is anime, yellow is movies, blue is TV series. Click a bar to open it.', 'watch-calendar.webp', 'The watch calendar with bars for each show'],
     ] },
     { id: 'backup', icon: '💾', title: 'Automatic backup', sub: 'Choose how often and where your backups go', steps: [
       ['Find it', 'Open <a href="#/settings/backup">Settings → Backup</a>. <b>Export backup</b> saves a backup file right now; <b>Import backup</b> brings one back.', 'backup-panel.webp', 'The Backup section'],
@@ -4133,6 +4184,421 @@
     if (el) el.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
   });
 
+  // ---------- Watch list: anime, movies and TV series ----------
+  // Search uses free public databases (no account or key): Jikan (MyAnimeList data) for anime,
+  // TVmaze for TV series and Wikipedia for movies. Only the title you type is sent to them.
+  const WKINDS = [['anime', 'Anime', '🌸'], ['movie', 'Movies', '🎬'], ['tv', 'TV series', '📺']];
+  const WSTATUS = [['watching', 'Watching'], ['later', 'Watch later'], ['finished', 'Finished']];
+  const wKindName = (k) => (WKINDS.find((x) => x[0] === k) || WKINDS[0])[1];
+  const wById = (id) => watch.find((w) => w.id === id);
+  const wSrcName = { mal: 'MyAnimeList', tvmaze: 'TVmaze', wiki: 'Wikipedia' };
+  const stripTags = (s) => String(s || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+  const WSEARCH = {
+    async anime(q, signal) {
+      const r = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(q)}&limit=12&sfw=true`, { signal });
+      if (!r.ok) throw new Error('search ' + r.status);
+      const j = await r.json();
+      return (j.data || []).map((a) => {
+        const img = a.images || {};
+        return {
+          title: a.title_english || a.title || '', alt: a.title_english && a.title && a.title !== a.title_english ? a.title : '',
+          year: String(a.year || (a.aired && a.aired.from ? a.aired.from.slice(0, 4) : '') || ''),
+          poster: (img.webp && (img.webp.large_image_url || img.webp.image_url)) || (img.jpg && (img.jpg.large_image_url || img.jpg.image_url)) || '',
+          info: { episodes: a.episodes || 0, genres: (a.genres || []).map((g) => g.name).slice(0, 4), type: a.type || '', overview: a.synopsis || '' },
+          src: { type: 'mal', id: a.mal_id, url: a.url || '' },
+        };
+      });
+    },
+    async tv(q, signal) {
+      const r = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(q)}`, { signal });
+      if (!r.ok) throw new Error('search ' + r.status);
+      return ((await r.json()) || []).map(({ show: s }) => ({
+        title: s.name || '', year: (s.premiered || '').slice(0, 4),
+        poster: s.image ? (s.image.original || s.image.medium || '') : '',
+        info: { genres: (s.genres || []).slice(0, 4), network: ((s.network || s.webChannel) || {}).name || '', overview: stripTags(s.summary), status: s.status || '' },
+        src: { type: 'tvmaze', id: s.id, url: s.url || '' },
+      }));
+    },
+    async movie(q, signal) {
+      const p = new URLSearchParams({ action: 'query', format: 'json', origin: '*', generator: 'search', gsrsearch: `${q} film`, gsrlimit: '15', prop: 'pageimages|description', piprop: 'thumbnail', pithumbsize: '500', redirects: '1' });
+      const r = await fetch(`https://en.wikipedia.org/w/api.php?${p}`, { signal });
+      if (!r.ok) throw new Error('search ' + r.status);
+      const pages = Object.values(((await r.json()).query || {}).pages || {}).sort((a, b) => a.index - b.index);
+      return pages.filter((pg) => /\bfilm\b|\bmovie\b/i.test(pg.description || '') || /\((\d{4} )?film\)$/.test(pg.title)).map((pg) => {
+        const y = ((pg.title.match(/\((\d{4}) film\)$/) || [])[1]) || ((pg.description || '').match(/\b(19|20)\d{2}\b/) || [''])[0];
+        return {
+          title: pg.title.replace(/\s*\((\d{4} )?(American |British |Indian |Japanese |Korean )?film\)$/, ''), year: y || '',
+          poster: pg.thumbnail ? pg.thumbnail.source : '',
+          info: { overview: pg.description || '' },
+          src: { type: 'wiki', id: pg.pageid, url: `https://en.wikipedia.org/?curid=${pg.pageid}` },
+        };
+      });
+    },
+  };
+  // Save a copy of the poster on this computer so it shows offline (falls back to the web address)
+  async function savePoster(w) {
+    if (!w.poster || w.posterId) return;
+    try {
+      const r = await fetch(w.poster, { mode: 'cors' });
+      if (!r.ok) return;
+      const img = await DJ.decode(await r.blob());
+      const out = await DJ.shrink(img, 600, 0.85, false, (await DJ.canWebp()) ? 'image/webp' : 'image/jpeg');
+      if (img.close) img.close();
+      const rec = { id: uid(), entryId: 'watch:' + w.id, kind: 'poster', blob: out.blob, thumb: out.blob, w: out.w, h: out.h, addedAt: Date.now() };
+      await DB.putPhoto(rec);
+      w.posterId = rec.id; await DB.put('watch', w);
+    } catch (_) { /* the poster keeps showing from the web */ }
+  }
+  async function tvEpisodes(w) {
+    if (w.src && w.src.type === 'tvmaze' && !w.info.episodes) {
+      try { const r = await fetch(`https://api.tvmaze.com/shows/${w.src.id}/episodes`); if (r.ok) { w.info.episodes = (await r.json()).length; await DB.put('watch', w); } } catch (_) { /* optional */ }
+    }
+  }
+  const posterHTML = (w, cls = '') => w.posterId ? `<span class="w-img ${cls}">${imgTag(w.posterId, 'thumb', w.title)}</span>`
+    : w.poster ? `<span class="w-img ${cls}"><img src="${esc(w.poster)}" alt="${esc(w.title)}" loading="lazy" referrerpolicy="no-referrer" class="loaded"></span>`
+    : `<span class="w-img ph ${cls} k-${w.kind}"><b>${esc((w.title || '?').trim().slice(0, 1).toUpperCase())}</b></span>`;
+  const fmtRating = (r) => (r == null ? '' : (Math.round(r * 10) / 10).toFixed(1).replace(/\.0$/, ''));
+  const starsHTML = (w, big = false) => `<span class="w-rate${big ? ' big' : ''}"><span class="stars" data-rate="${w.id}" role="slider" tabindex="0" aria-label="Your rating for ${esc(w.title)}" aria-valuemin="0" aria-valuemax="5" aria-valuenow="${w.rating ?? 0}" aria-valuetext="${w.rating != null ? fmtRating(w.rating) + ' out of 5' : 'Not rated'}" style="--r:${((w.rating || 0) / 5 * 100).toFixed(1)}%"><span class="rs-bg" aria-hidden="true">★★★★★</span><span class="rs-fg" aria-hidden="true">★★★★★</span></span><b class="rv">${w.rating != null ? fmtRating(w.rating) : 'Rate'}</b></span>`;
+  const wMeta = (w) => [w.year, w.kind !== 'movie' && w.info && w.info.episodes ? `${w.info.episodes} ep` : '', w.info && w.info.network].filter(Boolean).join(' · ');
+  const wDates = (w) => {
+    if (w.status === 'later') return `Added ${D.tiny(D.fmt(new Date(w.addedAt)))}`;
+    if (w.status === 'watching') return w.started ? `Since ${D.tiny(w.started)}` : 'Watching';
+    if (!w.started || w.started === w.finished) return w.finished ? `Watched ${D.tiny(w.finished)}` : 'Finished';
+    return `${D.tiny(w.started)} – ${w.finished ? D.tiny(w.finished) : ''}`;
+  };
+  function wCardHTML(w) {
+    const eps = w.kind !== 'movie' && w.status === 'watching';
+    return `<article class="w-card s-${w.status}" data-id="${w.id}">
+      <button type="button" class="w-poster" data-action="watch-open" data-id="${w.id}" aria-label="Open ${esc(w.title)}">${posterHTML(w)}${w.rewatch ? `<span class="w-badge">Watched ${w.rewatch + 1}×</span>` : ''}</button>
+      <div class="w-body">
+        <b class="w-title" title="${esc(w.title)}">${esc(w.title)}</b>
+        <small class="w-meta">${esc(wMeta(w) || wKindName(w.kind))}</small>
+        <small class="w-when">${esc(wDates(w))}</small>
+        ${eps ? `<div class="w-ep"><button type="button" class="icon-btn sm" data-action="watch-ep" data-d="-1" data-id="${w.id}" aria-label="One episode back">−</button><span>Ep <b>${w.ep || 0}</b>${w.info.episodes ? ` / ${w.info.episodes}` : ''}</span><button type="button" class="icon-btn sm" data-action="watch-ep" data-d="1" data-id="${w.id}" aria-label="One more episode">+</button></div>` : ''}
+        ${w.status === 'watching' ? `<button type="button" class="btn btn-primary w-act" data-action="watch-finish" data-id="${w.id}">✓ Finished watching</button>` : ''}
+        ${w.status === 'later' ? `<button type="button" class="btn btn-line w-act" data-action="watch-start" data-id="${w.id}">▶ Start watching</button>` : ''}
+        ${w.status === 'finished' ? starsHTML(w) : ''}
+      </div>
+    </article>`;
+  }
+  function renderWatch(arg) {
+    if (arg === 'cal' || /^cal-\d{4}-\d{2}$/.test(arg || '')) return renderWatchCal(arg === 'cal' ? D.ym(D.today()) : arg.slice(4));
+    view.dataset.title = 'Watch list';
+    if (WKINDS.some((k) => k[0] === arg)) state.watchKind = arg;
+    const kind = state.watchKind || 'anime', status = state.watchStatus || 'watching', sort = state.watchSort || 'recent';
+    const ofKind = watch.filter((w) => w.kind === kind);
+    let list = ofKind.filter((w) => w.status === status);
+    const by = { recent: (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0), title: (a, b) => a.title.localeCompare(b.title), rating: (a, b) => (b.rating ?? -1) - (a.rating ?? -1) || a.title.localeCompare(b.title), date: (a, b) => (b.finished || b.started || '').localeCompare(a.finished || a.started || '') };
+    list = list.sort(by[sort] || by.recent);
+    const empty = { watching: 'Nothing here yet. Add something you’re watching now, or start one from Watch later.', later: 'Nothing saved for later. Add shows you want to watch someday.', finished: 'When you finish something, it lands here and you can rate it.' }[status];
+    const fin = ofKind.filter((w) => w.status === 'finished' && w.rating != null);
+    view.innerHTML = `<div class="page-wide watch-page">
+      <header class="page-head"><h1>Watch list</h1>
+        <div class="seg" role="group" aria-label="View"><a href="#/watch" aria-current="true">List</a><a href="#/watch/cal">Calendar</a></div>
+        <button class="btn btn-primary" data-action="watch-add">+ Add</button></header>
+      <nav class="w-kinds" role="tablist" aria-label="Kind">${WKINDS.map(([k, n, ic]) => `<button type="button" role="tab" data-wkind="${k}" aria-selected="${k === kind}"><span>${ic}</span>${n}<small>${watch.filter((w) => w.kind === k).length}</small></button>`).join('')}</nav>
+      <div class="w-bar">
+        <div class="seg" role="tablist" aria-label="Status">${WSTATUS.map(([s, n]) => `<button type="button" role="tab" data-wstatus="${s}" aria-pressed="${s === status}">${n} <span class="muted">${ofKind.filter((w) => w.status === s).length}</span></button>`).join('')}</div>
+        <span class="spacer"></span>
+        <label class="w-sort">Sort <select class="text-input" id="wSort">${[['recent', 'Recently changed'], ['title', 'Title'], ['date', 'Date watched'], ['rating', 'Your rating']].map(([v, n]) => `<option value="${v}"${v === sort ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+      </div>
+      ${status === 'finished' && fin.length ? `<p class="w-stats">${plural(ofKind.filter((w) => w.status === 'finished').length, 'title')} finished · average rating <b>★ ${fmtRating(fin.reduce((s, w) => s + w.rating, 0) / fin.length)}</b></p>` : ''}
+      ${list.length ? `<div class="w-grid">${list.map(wCardHTML).join('')}</div>` : `<div class="empty w-empty"><p>${empty}</p><button class="btn btn-primary" data-action="watch-add">+ Add ${kind === 'movie' ? 'a movie' : kind === 'tv' ? 'a TV series' : 'an anime'}</button></div>`}
+    </div>`;
+    $('#wSort').addEventListener('change', (ev) => { state.watchSort = ev.target.value; renderWatch(); hydrate(view); });
+  }
+  // The watch calendar: a bar for each show from the day you started to the day you finished
+  function renderWatchCal(ym) {
+    view.dataset.title = 'Watch calendar · ' + D.monthName(ym);
+    const today = D.today(), first = D.parse(ym + '-01');
+    const start = addDays(D.fmt(first), -first.getDay());
+    const lastDay = `${ym}-${pad(D.daysIn(ym))}`, end = addDays(lastDay, 6 - D.parse(lastDay).getDay());
+    const spans = watch.filter((w) => w.started).map((w) => ({ w, s: w.started, e: w.finished || (w.status === 'watching' ? today : w.started), open: w.status === 'watching' }))
+      .concat(watch.flatMap((w) => (w.history || []).filter((h) => h.start).map((h) => ({ w, s: h.start, e: h.end || h.start, open: false }))));
+    const wd = Array.from({ length: 7 }, (_, i) => new Date(2023, 0, 1 + i).toLocaleDateString(undefined, { weekday: 'short' }));
+    let weeks = '', count = new Set();
+    for (let ws = start; ws <= end; ws = addDays(ws, 7)) {
+      const we = addDays(ws, 6);
+      const items = spans.filter((x) => x.s <= we && x.e >= ws).sort((a, b) => a.s.localeCompare(b.s) || b.e.localeCompare(a.e));
+      const lanes = [];
+      for (const it of items) {
+        const c0 = it.s < ws ? 0 : Math.round((D.parse(it.s) - D.parse(ws)) / 86400000);
+        const c1 = it.e > we ? 6 : Math.round((D.parse(it.e) - D.parse(ws)) / 86400000);
+        let lane = lanes.findIndex((l) => l.end < c0);
+        if (lane < 0) { lane = lanes.length; lanes.push({ end: -1, bars: [] }); }
+        lanes[lane].end = c1;
+        lanes[lane].bars.push({ ...it, c0, c1, cont: it.s < ws, more: it.e > we || (it.open && it.e >= we) });
+        if (D.ym(it.s) <= ym && D.ym(it.e) >= ym) count.add(it.w.id);
+      }
+      const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+      weeks += `<div class="wc-week">
+        <div class="wc-days">${days.map((d) => `<span class="${[d.slice(0, 7) !== ym && 'out', d === today && 'today'].filter(Boolean).join(' ')}">${Number(d.slice(8))}</span>`).join('')}</div>
+        ${lanes.map((l) => `<div class="wc-lane">${l.bars.map((b) => `<button type="button" class="wc-bar k-${b.w.kind}${b.cont ? ' cont' : ''}${b.more ? ' more' : ''}${b.open && b.c1 === 6 && b.e === today ? ' open' : ''}" style="grid-column:${b.c0 + 1} / ${b.c1 + 2}" data-action="watch-open" data-id="${b.w.id}" title="${esc(`${b.w.title} · ${D.tiny(b.s)}${b.s !== b.e ? ' – ' + (b.open ? 'now' : D.tiny(b.e)) : ''}`)}">
+          ${!b.cont ? `<span class="wc-th">${b.w.posterId ? imgTag(b.w.posterId, 'thumb') : b.w.poster ? `<img src="${esc(b.w.poster)}" alt="" class="loaded" referrerpolicy="no-referrer">` : ''}</span>` : ''}<span class="wc-t">${esc(b.w.title)}</span></button>`).join('')}</div>`).join('')}
+      </div>`;
+    }
+    view.innerHTML = `<div class="page-wide watch-page">
+      <header class="page-head"><h1>Watch list</h1>
+        <div class="seg" role="group" aria-label="View"><a href="#/watch">List</a><a href="#/watch/cal" aria-current="true">Calendar</a></div>
+        <button class="btn btn-primary" data-action="watch-add">+ Add</button></header>
+      <header class="cal-head">
+        <a class="icon-btn" href="#/watch/cal-${D.addMonths(ym, -1)}" aria-label="Previous month">${ICON.left}</a>
+        <h2 class="wc-month">${esc(D.monthName(ym))}</h2>
+        <a class="icon-btn" href="#/watch/cal-${D.addMonths(ym, 1)}" aria-label="Next month">${ICON.right}</a>
+        <span class="spacer"></span>
+        <span class="wc-legend">${WKINDS.map(([k, n]) => `<span class="k-${k}"><i></i>${n}</span>`).join('')}</span>
+        ${ym !== D.ym(today) ? `<a class="btn btn-line" href="#/watch/cal">This month</a>` : ''}
+      </header>
+      <div class="wc"><div class="wc-head">${wd.map((d) => `<span>${esc(d)}</span>`).join('')}</div>${weeks}</div>
+      <p class="cal-foot">${count.size ? `${plural(count.size, 'title')} watched in ${esc(D.monthName(ym, { month: 'long' }))}. Click a bar to open it.` : 'Nothing watched this month. Shows appear here from the day you start them until the day you finish.'}</p>
+    </div>`;
+  }
+  async function wSave(w, patch = {}) {
+    Object.assign(w, patch, { updatedAt: Date.now() });
+    await DB.put('watch', w);
+    const i = watch.findIndex((x) => x.id === w.id); if (i >= 0) watch[i] = w; else watch.push(w);
+  }
+  const wRefresh = () => { if (/^#\/watch/.test(location.hash)) { const y = window.scrollY; route(); window.scrollTo(0, y); } else route(); };
+
+  // Add dialog
+  let wAdd = null;
+  function ensureWatchDialogs() {
+    if ($('#watchAddDlg')) return;
+    document.body.insertAdjacentHTML('beforeend', `
+      <dialog id="watchAddDlg" class="mini w-dlg" aria-labelledby="waTitle">
+        <form method="dialog" id="waForm">
+          <header class="ed-head"><button type="button" class="btn btn-ghost" data-wa="cancel">Cancel</button><h2 id="waTitle">Add to watch list</h2><button type="submit" class="btn btn-primary" id="waSave" disabled>Add</button></header>
+          <div class="mini-body">
+            <div class="seg wa-kinds" role="radiogroup" aria-label="Kind">${WKINDS.map(([k, n, ic]) => `<button type="button" role="radio" data-wa-kind="${k}">${ic} ${n}</button>`).join('')}</div>
+            <label class="field" style="margin-top:12px"><span>Name</span><input id="waQ" class="text-input" type="search" placeholder="Start typing a name…" autocomplete="off" maxlength="120"></label>
+            <p class="muted wa-note" id="waNote"></p>
+            <div class="wa-results" id="waResults" role="listbox" aria-label="Suggestions"></div>
+            <div class="wa-status"><p class="ed-label">Add as</p><div class="wa-st">
+              <button type="button" data-wa-st="watching"><b>▶ Watching</b><small>Starts on the watch calendar today</small></button>
+              <button type="button" data-wa-st="later"><b>🔖 Watch later</b><small>Saved for later</small></button></div></div>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="watchDlg" class="mini w-dlg" aria-labelledby="wdTitle">
+        <form method="dialog" id="wdForm">
+          <header class="ed-head"><button type="button" class="btn btn-ghost" data-wd="cancel">Cancel</button><h2 id="wdTitle">Details</h2><button type="submit" class="btn btn-primary">Save</button></header>
+          <div class="mini-body" id="wdBody"></div>
+        </form>
+      </dialog>`);
+    const dlg = $('#watchAddDlg');
+    dlg.addEventListener('click', (ev) => {
+      const b = ev.target.closest('button'); if (!b) return;
+      if (b.dataset.wa === 'cancel') dlg.close();
+      if (b.dataset.waKind) { wAdd.kind = b.dataset.waKind; wAdd.pick = null; drawWatchAdd(); wSearch(); $('#waQ').focus(); }
+      if (b.dataset.waSt) { wAdd.status = b.dataset.waSt; drawWatchAdd(); }
+      if (b.dataset.waPick != null) { const i = Number(b.dataset.waPick); wAdd.pick = i < 0 ? { title: $('#waQ').value.trim(), year: '', poster: '', info: {}, src: { type: 'manual' } } : wAdd.results[i]; drawWatchAdd(); }
+    });
+    let t = null;
+    $('#waQ').addEventListener('input', () => { wAdd.pick = null; clearTimeout(t); t = setTimeout(wSearch, 450); drawWatchAdd(); });
+    $('#waForm').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const p = wAdd.pick; if (!p || !p.title) return;
+      const today = D.today();
+      const w = { id: uid(), kind: wAdd.kind, title: p.title.slice(0, 200), alt: p.alt || '', year: p.year || '', poster: p.poster || '', posterId: '', src: p.src || { type: 'manual' }, info: { ...(p.info || {}) },
+        status: wAdd.status, started: wAdd.status === 'watching' ? today : '', finished: '', ep: 0, rating: null, notes: '', history: [], rewatch: 0, addedAt: Date.now(), updatedAt: Date.now() };
+      await wSave(w);
+      dlg.close();
+      state.watchKind = w.kind; state.watchStatus = w.status;
+      toast(`${w.title} added to ${w.status === 'watching' ? 'Watching' : 'Watch later'}`);
+      if (!/^#\/watch/.test(location.hash)) go('#/watch'); else wRefresh();
+      savePoster(w).then(() => { if (w.posterId && /^#\/watch/.test(location.hash)) wRefresh(); });
+      tvEpisodes(w).then(() => { if (w.info.episodes && /^#\/watch/.test(location.hash)) wRefresh(); });
+    });
+    $('#watchDlg').addEventListener('click', (ev) => { const b = ev.target.closest('[data-wd]'); if (b) watchDlgAction(b); });
+    $('#wdForm').addEventListener('submit', (ev) => { ev.preventDefault(); saveWatchDlg(); });
+  }
+  function openWatchAdd() {
+    ensureWatchDialogs();
+    wAdd = { kind: state.watchKind || 'anime', status: 'watching', results: [], pick: null, ctrl: null, error: '' };
+    $('#waQ').value = '';
+    drawWatchAdd();
+    $('#watchAddDlg').showModal();
+    setTimeout(() => $('#waQ').focus(), 30);
+  }
+  async function wSearch() {
+    const q = $('#waQ').value.trim();
+    if (wAdd.ctrl) wAdd.ctrl.abort();
+    wAdd.results = []; wAdd.error = '';
+    if (q.length < 2) { drawWatchAdd(); return; }
+    if (!navigator.onLine) { wAdd.error = 'offline'; drawWatchAdd(); return; }
+    const ctrl = wAdd.ctrl = new AbortController();
+    wAdd.loading = true; drawWatchAdd();
+    try {
+      const res = await WSEARCH[wAdd.kind](q, ctrl.signal);
+      if (ctrl !== wAdd.ctrl) return;
+      wAdd.results = res.slice(0, 12);
+    } catch (e) { if (e.name === 'AbortError') return; wAdd.error = 'failed'; }
+    wAdd.loading = false; drawWatchAdd();
+  }
+  function drawWatchAdd() {
+    const q = $('#waQ').value.trim(), a = wAdd;
+    $$('[data-wa-kind]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.waKind === a.kind)));
+    $$('[data-wa-st]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.waSt === a.status)));
+    $('#waNote').textContent = a.loading ? 'Searching…' : a.error === 'offline' ? 'Suggestions need an internet connection. You can still add it by name.'
+      : a.error ? 'Suggestions couldn’t be loaded right now. You can still add it by name.' : q.length >= 2 && !a.results.length ? 'No matches found. Add it by name below.' : q.length < 2 ? `Suggestions with pictures come from ${a.kind === 'anime' ? 'MyAnimeList' : a.kind === 'tv' ? 'TVmaze' : 'Wikipedia'}.` : '';
+    const row = (r, i) => `<button type="button" class="wa-r${a.pick === r ? ' on' : ''}" role="option" aria-selected="${a.pick === r}" data-wa-pick="${i}">
+      ${r.poster ? `<img src="${esc(r.poster)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="wa-noimg k-${a.kind}">${esc((r.title || '?').slice(0, 1))}</span>`}
+      <span class="wa-txt"><b>${esc(r.title)}</b>${r.alt ? `<small>${esc(r.alt)}</small>` : ''}<small>${esc([r.year, r.info.type, r.info.episodes ? r.info.episodes + ' episodes' : '', r.info.network, (r.info.genres || []).slice(0, 2).join(', ')].filter(Boolean).join(' · ') || (r.info.overview || '').slice(0, 80))}</small></span></button>`;
+    const manualOn = a.pick && a.pick.src && a.pick.src.type === 'manual';
+    $('#waResults').innerHTML = a.results.map(row).join('') + (q ? `<button type="button" class="wa-r manual${manualOn ? ' on' : ''}" data-wa-pick="-1"><span class="wa-noimg">＋</span><span class="wa-txt"><b>Add “${esc(q)}” by name only</b><small>No picture; you can add your own later</small></span></button>` : '');
+    $('#waSave').disabled = !a.pick;
+    $('#waSave').textContent = a.pick ? `Add${a.status === 'later' ? ' to Watch later' : ''}` : 'Add';
+  }
+
+  // Details dialog
+  let wd = null;
+  function openWatch(id) {
+    const w = wById(id); if (!w) return;
+    ensureWatchDialogs();
+    wd = { id, rating: w.rating, posterFile: null, removePoster: false };
+    const eps = w.kind !== 'movie';
+    $('#wdBody').innerHTML = `
+      <div class="wd-top">
+        <label class="wd-poster" title="Change picture">${posterHTML(w, 'lg')}<input type="file" accept="image/*" id="wdPoster" hidden><span>Change picture</span></label>
+        <div class="wd-head">
+          <input id="wdName" class="text-input wd-name" value="${esc(w.title)}" maxlength="200" aria-label="Title">
+          ${w.alt ? `<p class="muted">${esc(w.alt)}</p>` : ''}
+          <p class="muted">${esc([wKindName(w.kind), wMeta(w)].filter(Boolean).join(' · '))}</p>
+          ${w.info && w.info.genres && w.info.genres.length ? `<p class="wd-genres">${w.info.genres.map((g) => `<span class="pill">${esc(g)}</span>`).join('')}</p>` : ''}
+          ${w.src && w.src.url ? `<a class="link" href="${esc(w.src.url)}" target="_blank" rel="noopener">Open on ${esc(wSrcName[w.src.type] || 'the web')}</a>` : ''}
+        </div>
+      </div>
+      ${w.info && w.info.overview ? `<p class="wd-over">${esc(w.info.overview.slice(0, 600))}${w.info.overview.length > 600 ? '…' : ''}</p>` : ''}
+      <div class="ed-field"><p class="ed-label">Status</p><div class="seg" role="radiogroup" aria-label="Status">${WSTATUS.map(([s, n]) => `<button type="button" role="radio" data-wd="status" data-v="${s}" aria-checked="${w.status === s}">${n}</button>`).join('')}</div></div>
+      <div class="wd-dates">
+        <label class="field"><span>Started</span><input type="date" id="wdStart" class="text-input" value="${w.started || ''}" max="${D.today()}"></label>
+        <label class="field"><span>Finished</span><input type="date" id="wdEnd" class="text-input" value="${w.finished || ''}" max="${D.today()}"></label>
+      </div>
+      ${eps ? `<div class="wd-eps"><label class="field"><span>Episodes watched</span><input type="number" min="0" id="wdEp" class="text-input" value="${w.ep || 0}"></label><label class="field"><span>Total episodes</span><input type="number" min="0" id="wdTotal" class="text-input" value="${(w.info && w.info.episodes) || ''}" placeholder="?"></label></div>` : ''}
+      <div class="ed-field"><p class="ed-label">Your rating <span class="muted">(click where you want on the stars; fractions work)</span></p>
+        <div class="wd-rate">${starsHTML({ ...w, rating: wd.rating }, true)}<button type="button" class="linkbtn" data-wd="clear-rating">Clear</button></div></div>
+      <div class="ed-field"><p class="ed-label"><label for="wdNotes">Notes</label></p><textarea id="wdNotes" class="text-input wd-notes" rows="3" placeholder="What did you think? Favorite moments, who you watched it with…">${esc(w.notes || '')}</textarea></div>
+      ${(w.history || []).length ? `<p class="muted wd-hist">Earlier: ${w.history.map((h) => `${D.tiny(h.start)}${h.end && h.end !== h.start ? ' – ' + D.tiny(h.end) : ''}`).join(' · ')}</p>` : ''}
+      <div class="ed-danger row-tight">
+        ${w.status === 'finished' ? '<button type="button" class="btn btn-line" data-wd="rewatch">↻ Watch again</button>' : ''}
+        <button type="button" class="btn btn-danger" data-wd="delete">Remove from watch list</button>
+      </div>`;
+    hydrate($('#wdBody'));
+    $('#wdPoster').addEventListener('change', async (ev) => {
+      const f = ev.target.files[0]; if (!f) return;
+      try {
+        const img = await DJ.decode(f); const out = await DJ.shrink(img, 600, 0.85, false, (await DJ.canWebp()) ? 'image/webp' : 'image/jpeg'); if (img.close) img.close();
+        wd.posterFile = out; $('.wd-poster .w-img').outerHTML = `<span class="w-img lg"><img src="${URL.createObjectURL(out.blob)}" alt="" class="loaded"></span>`;
+      } catch (_) { toast('That picture couldn’t be opened.'); }
+    });
+    $('#watchDlg').showModal();
+  }
+  async function watchDlgAction(b) {
+    const w = wById(wd.id); if (!w) return;
+    const a = b.dataset.wd;
+    if (a === 'cancel') $('#watchDlg').close();
+    if (a === 'status') {
+      $$('#wdBody [data-wd="status"]').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+      const v = b.dataset.v, s = $('#wdStart'), e = $('#wdEnd');
+      if (v !== 'later' && !s.value) s.value = D.today();
+      if (v === 'finished' && !e.value) e.value = D.today();
+      if (v !== 'finished') e.value = '';
+      if (v === 'later') s.value = '';
+    }
+    if (a === 'clear-rating') { wd.rating = null; const st = $('#wdBody .stars'); st.style.setProperty('--r', '0%'); $('#wdBody .rv').textContent = 'Rate'; }
+    if (a === 'rewatch') {
+      const hist = [...(w.history || []), { start: w.started || w.finished, end: w.finished || w.started }];
+      await wSave(w, { history: hist, status: 'watching', started: D.today(), finished: '', ep: 0, rewatch: (w.rewatch || 0) + 1 });
+      $('#watchDlg').close(); state.watchStatus = 'watching'; toast(`Watching ${w.title} again`); wRefresh();
+    }
+    if (a === 'delete') {
+      if (!confirm(`Remove “${w.title}” from your watch list?`)) return;
+      await DB.del('watch', w.id); if (w.posterId) { DB.del('photos', w.posterId).catch(() => {}); forgetPhoto(w.posterId); }
+      watch = watch.filter((x) => x.id !== w.id);
+      $('#watchDlg').close(); toast('Removed'); wRefresh();
+    }
+  }
+  async function saveWatchDlg() {
+    const w = wById(wd.id); if (!w) return;
+    const status = ($('#wdBody [data-wd="status"][aria-checked="true"]') || {}).dataset?.v || w.status;
+    let started = $('#wdStart').value, finished = $('#wdEnd').value;
+    if (status === 'later') { started = ''; finished = ''; }
+    if (status === 'watching') finished = '';
+    if (status === 'finished' && !finished) finished = started || D.today();
+    if (started && finished && finished < started) { toast('The finish date is before the start date.', 3500); return; }
+    const patch = { title: $('#wdName').value.trim() || w.title, status, started, finished, notes: $('#wdNotes').value.trim(), rating: wd.rating };
+    if ($('#wdEp')) { patch.ep = Math.max(0, Number($('#wdEp').value) || 0); patch.info = { ...w.info, episodes: Math.max(0, Number($('#wdTotal').value) || 0) }; }
+    if (wd.posterFile) {
+      if (w.posterId) { DB.del('photos', w.posterId).catch(() => {}); forgetPhoto(w.posterId); }
+      const rec = { id: uid(), entryId: 'watch:' + w.id, kind: 'poster', blob: wd.posterFile.blob, thumb: wd.posterFile.blob, w: wd.posterFile.w, h: wd.posterFile.h, addedAt: Date.now() };
+      await DB.putPhoto(rec); patch.posterId = rec.id;
+    }
+    await wSave(w, patch);
+    state.watchStatus = status; state.watchKind = w.kind;
+    $('#watchDlg').close(); toast('Saved'); wRefresh();
+  }
+
+  // Star rating: click anywhere on the stars; 4.3 is fine
+  const rateAt = (st, x) => { const r = st.getBoundingClientRect(); if (!r.width) return null; return clamp(Math.round(((x - r.left) / r.width) * 50) / 10, 0.1, 5); };
+  function setStars(st, v) { st.style.setProperty('--r', ((v || 0) / 5 * 100).toFixed(1) + '%'); const rv = st.parentElement.querySelector('.rv'); if (rv) rv.textContent = v ? fmtRating(v) : 'Rate'; st.setAttribute('aria-valuenow', v || 0); }
+  document.addEventListener('pointermove', (ev) => {
+    const st = ev.target.closest && ev.target.closest('.stars'); if (!st || ev.pointerType === 'touch') return;
+    const v = rateAt(st, ev.clientX); if (v == null) return;
+    setStars(st, v); st.classList.add('preview');
+  });
+  document.addEventListener('pointerout', (ev) => {
+    const st = ev.target.closest && ev.target.closest('.stars'); if (!st || st.contains(ev.relatedTarget)) return;
+    st.classList.remove('preview');
+    const w = wById(st.dataset.rate); const v = st.closest('#wdBody') ? wd && wd.rating : w && w.rating;
+    setStars(st, v);
+  });
+  document.addEventListener('click', async (ev) => {
+    const st = ev.target.closest && ev.target.closest('.stars'); if (!st) return;
+    const v = rateAt(st, ev.clientX); if (v == null) return;
+    setStars(st, v); st.classList.remove('preview');
+    if (st.closest('#wdBody')) { wd.rating = v; return; }
+    const w = wById(st.dataset.rate); if (!w) return;
+    await wSave(w, { rating: v }); toast(`Rated ${fmtRating(v)} ★`);
+  });
+  document.addEventListener('keydown', async (ev) => {
+    const st = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('stars') ? document.activeElement : null;
+    if (!st || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(ev.key)) return;
+    ev.preventDefault();
+    const inDlg = !!st.closest('#wdBody'), w = wById(st.dataset.rate);
+    const cur = inDlg ? (wd.rating || 0) : ((w && w.rating) || 0);
+    const v = clamp(Math.round((cur + (/Right|Up/.test(ev.key) ? 1 : -1) * (ev.shiftKey ? 0.5 : 0.1)) * 10) / 10, 0.1, 5);
+    setStars(st, v);
+    if (inDlg) wd.rating = v; else if (w) await wSave(w, { rating: v });
+  });
+  view.addEventListener('click', (ev) => {
+    const k = ev.target.closest('[data-wkind]'); if (k) { state.watchKind = k.dataset.wkind; renderWatch(); hydrate(view); return; }
+    const s = ev.target.closest('[data-wstatus]'); if (s) { state.watchStatus = s.dataset.wstatus; renderWatch(); hydrate(view); }
+  });
+  async function watchAction(act, b) {
+    const w = wById(b.dataset.id);
+    if (act === 'watch-add') return openWatchAdd();
+    if (!w) return;
+    if (act === 'watch-open') return openWatch(w.id);
+    if (act === 'watch-start') { await wSave(w, { status: 'watching', started: D.today() }); state.watchStatus = 'watching'; toast(`Started ${w.title}`); return wRefresh(); }
+    if (act === 'watch-finish') {
+      const eps = w.info && w.info.episodes;
+      await wSave(w, { status: 'finished', finished: D.today(), started: w.started || D.today(), ep: eps ? eps : w.ep });
+      state.watchStatus = 'finished'; toast(`Finished ${w.title}! Click the stars to rate it.`, 3500); return wRefresh();
+    }
+    if (act === 'watch-ep') {
+      const max = (w.info && w.info.episodes) || Infinity;
+      await wSave(w, { ep: clamp((w.ep || 0) + Number(b.dataset.d), 0, max) });
+      const el = b.closest('.w-ep'); if (el) el.querySelector('b').textContent = w.ep;
+      if (w.ep === max && max !== Infinity) toast('That was the last episode. Choose “Finished watching” when you’re done.', 3500);
+    }
+  }
+  function watchingHomeHTML() {
+    const list = watch.filter((w) => w.status === 'watching').sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 10);
+    if (!list.length) return '';
+    return `<section class="home-sec"><header><h2>Watching now</h2><a class="link" href="#/watch">Watch list</a></header>
+      <div class="w-strip">${list.map((w) => `<button type="button" class="w-mini" data-action="watch-open" data-id="${w.id}">${posterHTML(w)}<b>${esc(w.title)}</b><small>${w.kind !== 'movie' && w.ep ? `Ep ${w.ep}${w.info.episodes ? ` / ${w.info.episodes}` : ''}` : esc(wDates(w))}</small></button>`).join('')}</div></section>`;
+  }
+
   // ---------- Global actions ----------
   document.addEventListener('click', async (ev) => {
     const h = ev.target.closest('[data-hero-act]');
@@ -4178,6 +4644,7 @@
     if (act === 'filter-tag') { state.filters = { ...emptyFilters(), tags: [b.dataset.id] }; state.showFilters = false; go('#/journal'); }
     if (act === 'fav' || act === 'pin') toggleFlag(b.dataset.id, act === 'fav' ? 'fav' : 'pinned');
     if (act === 'quick') openQuick();
+    if (act.startsWith('watch-')) watchAction(act, b);
     if (act === 'tut-zoom') { lbState.ids = []; lb.classList.add('single'); $('#lbCount').textContent = ''; $('#lbImg').src = b.dataset.src; lb.showModal(); }
     if (act === 'save-cid') {
       const v = ($('#gCid').value || '').trim();
@@ -4230,7 +4697,7 @@
     }
   });
   document.addEventListener('keydown', (ev) => {
-    if (editor.open || lb.open || personDlg.open || placeDlg.open || passDlg.open || quickDlg.open || tagDlg.open || capsuleDlg.open || importDlg.open || !storyEl.hidden || !lockEl.hidden || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    if (document.querySelector('dialog[open]') || editor.open || lb.open || personDlg.open || placeDlg.open || passDlg.open || quickDlg.open || tagDlg.open || capsuleDlg.open || importDlg.open || !storyEl.hidden || !lockEl.hidden || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || ev.metaKey || ev.ctrlKey || ev.altKey) return;
     if (ev.key === 'n' && !pe.on) { ev.preventDefault(); openEditor(); }
     if (hero.el && (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') && hero.el.contains(document.activeElement)) heroShow(hero.i + (ev.key === 'ArrowRight' ? 1 : -1));
   });
@@ -4244,7 +4711,8 @@
 
   // ---------- Start ----------
   async function loadAll() {
-    const [ents, ppl, pls, tgs] = await Promise.all([DB.allEntries(), DB.allPeople(), DB.allPlaces(), DB.allTags()]);
+    const [ents, ppl, pls, tgs, wl] = await Promise.all([DB.allEntries(), DB.allPeople(), DB.allPlaces(), DB.allTags(), DB.allWatch()]);
+    watch = wl.map((w) => ({ ...w, info: w.info || {}, history: w.history || [] }));
     const today = D.today(), all = ents.map(norm);
     capsules = all.filter((e) => e.capsule && e.capsule > today);   // sealed letters stay out of the journal until they open
     entries = all.filter((e) => !(e.capsule && e.capsule > today)); sortEntries();
@@ -4298,6 +4766,6 @@
     }
   }
   // Exposed for testing in the console
-  window.__journal = { DB, get entries() { return entries; }, get people() { return people; }, get places() { return places; }, get tags() { return tags; }, readExif, get locked() { return !CRYPT.key && lockOn(); }, reload: async () => { await loadAll(); route(); } };
+  window.__journal = { DB, get entries() { return entries; }, get watch() { return watch; }, get people() { return people; }, get places() { return places; }, get tags() { return tags; }, readExif, get locked() { return !CRYPT.key && lockOn(); }, reload: async () => { await loadAll(); route(); } };
   start();
 })();

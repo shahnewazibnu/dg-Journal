@@ -67,6 +67,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>
         <span>Recaps</span>
       </a>
+      <a class="nav-link" data-nav="watch" href="#/watch">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5.5" width="18" height="12.5" rx="2"/><path d="M8.5 21h7M10 9.2v5.6l4.8-2.8z"/></svg>
+        <span>Watch list</span>
+      </a>
       <a class="nav-link" data-nav="people" href="#/people">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9.5" r="2.5"/><path d="M15.8 14.6c2.3-.3 4.2 1.2 4.7 4"/></svg>
         <span>People</span>
@@ -115,7 +119,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="13" rx="2"/><circle cx="9" cy="10.5" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5 4.5 4"/></svg>
           <span>Add photos</span>
         </label>
-        <p class="ed-hint">You can also drop or paste photos here. The first photo is the cover.</p>
+        <p class="ed-hint" id="edPhotoHint">You can also drop or paste photos here. The first photo is the cover.</p>
         <div id="edTitleWrap" class="ed-title-wrap">
           <input id="edTitle" class="ed-title title-text" type="text" placeholder="Title (optional)" maxlength="140" autocomplete="off">
         </div>
