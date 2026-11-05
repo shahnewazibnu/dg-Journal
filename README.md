@@ -8,7 +8,18 @@ Double-click `index.html`. It opens in your default browser (Chrome or Edge work
 
 Keyboard shortcut: press **N** anywhere to start a new entry.
 
-## What's new in v0.7: Watch list
+## What's new in v0.8: Recipes and moving memories
+
+- **Recipes** in the sidebar: a recipe book with a photo, servings, prep and cook time, categories and favorites.
+  - Ingredient suggestions as you type (about 250 common ones, including Bengali and South Asian staples). Ingredients you've used before come first and bring their unit.
+  - Units include tsp, tbsp, cup, pinch, dash, handful, g, kg, ml, l, piece, clove and "to taste". Amounts accept 1, ½, 1 1/2 and ranges like 2–3.
+  - Drag ⠿ to reorder steps and ingredients. Copy steps or ingredients from another recipe.
+  - Change servings and every amount scales. Steps that mention a time get a timer.
+  - Cooking mode: one big step at a time, screen stays on, ingredients checklist, timers that beep. "I cooked this" keeps a log.
+  - Search by name or ingredient, print, and included in backups and encryption.
+- **Moving memories** on Home: 10 random photos glide left to right; one slides out, a new one comes in. Hover to pause, click to open.
+
+## What was new in v0.7: Watch list
 
 - **Watch list** in the sidebar, with three sections: **Anime**, **Movies** and **TV series**.
 - **+ Add** suggests titles with pictures as you type: anime from MyAnimeList (through the free Jikan service), TV series from TVmaze, movies from Wikipedia. No account or key is needed; only the name you type is sent. Offline, or if nothing matches, you can add it by name only.

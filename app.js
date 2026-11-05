@@ -242,7 +242,7 @@
   const DB = (() => {
     let dbp;
     const open = () => dbp || (dbp = new Promise((res, rej) => {
-      const r = indexedDB.open('digital-journal', 4);
+      const r = indexedDB.open('digital-journal', 5);
       r.onupgradeneeded = () => {
         const db = r.result;
         if (!db.objectStoreNames.contains('entries')) db.createObjectStore('entries', { keyPath: 'id' }).createIndex('date', 'date');
@@ -251,6 +251,7 @@
         if (!db.objectStoreNames.contains('places')) db.createObjectStore('places', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('tags')) db.createObjectStore('tags', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('watch')) db.createObjectStore('watch', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('recipes')) db.createObjectStore('recipes', { keyPath: 'id' });
       };
       r.onblocked = () => toast('Close other tabs with the journal open, then reload this page.', 6000);
       r.onsuccess = () => { const db = r.result; db.onversionchange = () => db.close(); res(db); };
@@ -283,6 +284,7 @@
       allPlaces: () => all('places'),
       allTags: () => all('tags'),
       allWatch: () => all('watch'),
+      allRecipes: () => all('recipes'),
       getPhoto: async (id) => unseal('photos', await rawGet('photos', id)),
       putPhoto: async (rec) => rawPut('photos', await seal('photos', rec)),
       put: async (store, rec) => rawPut(store, await seal(store, rec)),
@@ -303,8 +305,8 @@
       }),
       putMany: async (data) => {
         const S = {};
-        for (const store of ['entries', 'people', 'places', 'tags', 'watch']) S[store] = await Promise.all((data[store] || []).map((r) => seal(store, r)));
-        await tx(['entries', 'people', 'places', 'tags', 'watch'], 'readwrite', (t) => { for (const store in S) S[store].forEach((r) => t.objectStore(store).put(r)); });
+        for (const store of ['entries', 'people', 'places', 'tags', 'watch', 'recipes']) S[store] = await Promise.all((data[store] || []).map((r) => seal(store, r)));
+        await tx(['entries', 'people', 'places', 'tags', 'watch', 'recipes'], 'readwrite', (t) => { for (const store in S) S[store].forEach((r) => t.objectStore(store).put(r)); });
         // Photos one at a time so a big import doesn't hold everything twice in memory
         for (const p of data.photos || []) await rawPut('photos', await seal('photos', p));
       },
@@ -313,7 +315,7 @@
   // Re-write every record encrypted (turning the lock on) or in the clear (turning it off)
   async function recryptAll(toKey, progress) {
     const fromKey = CRYPT.key;
-    for (const store of ['entries', 'people', 'places', 'tags', 'watch', 'photos']) {
+    for (const store of ['entries', 'people', 'places', 'tags', 'watch', 'recipes', 'photos']) {
       const ids = await DB.keys(store);
       let i = 0;
       for (const id of ids) {
@@ -381,6 +383,7 @@
   // ---------- App state ----------
   let entries = [];           // all entry records (no image data), newest first
   let watch = [];             // watch list: anime, movies and TV series
+  let recipes = [];           // recipe book
   let people = [];            // { id, name, photo: Blob|null, createdAt }
   let places = [];            // { id, name, addr, lat, lng, link, createdAt }
   const avatarURL = new Map();
@@ -484,7 +487,7 @@
     let name = parts[0] || 'home';
     if (name === 'backup') name = 'settings';
     const arg = parts[1];
-    const navFor = { book: 'journal', print: 'journal', day: 'calendar', entry: 'journal', person: 'people', place: 'people', tag: 'people', map: 'people' };
+    const navFor = { recipe: 'recipes', book: 'journal', print: 'journal', day: 'calendar', entry: 'journal', person: 'people', place: 'people', tag: 'people', map: 'people' };
     if (mapObj && name !== 'map') { mapObj.remove(); mapObj = null; }
     $$('.nav-link').forEach((a) => {
       if (a.dataset.nav === (navFor[name] || name)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -507,6 +510,8 @@
       case 'print': renderPrint(arg); break;
       case 'help': renderHelp(arg); break;
       case 'watch': renderWatch(arg); break;
+      case 'recipes': renderRecipes(); break;
+      case 'recipe': renderRecipe(arg, parts[2]); break;
       default: renderHome();
     }
     const done = () => {
@@ -535,7 +540,7 @@
 
   // ---------- Home ----------
   const hero = { timer: null, i: 0, n: 0, paused: false, el: null };
-  function stopHero() { clearTimeout(hero.timer); hero.timer = null; hero.el = null; }
+  function stopHero() { clearTimeout(hero.timer); hero.timer = null; hero.el = null; stopStrip(); }
 
   function greeting() {
     const h = new Date().getHours();
@@ -744,6 +749,7 @@
       ${pinnedHTML()}
       ${watchingHomeHTML()}
       ${heroHTML()}
+      ${memStripHTML()}
       <section class="home-sec"><header><h2>On this day</h2></header>${otdHTML}</section>
       ${week.length ? `<section class="home-sec"><header><h2>This week in past years</h2></header><div class="mem-row">${week.map((e) => memCard(e, true)).join('')}</div></section>` : ''}
       ${wp ? `<section class="home-sec" id="withPerson">${wp}</section>` : ''}
@@ -755,6 +761,7 @@
       </section>
     </div>`;
     heroInit();
+    stripInit();
     seasonFx();
   }
 
@@ -2057,10 +2064,10 @@
     toast(`Backup exported: ${plural(count, 'entry', 'entries')}${lockOn() ? ' (encrypted)' : ''}`);
   }
   async function makeBackup() {
-    const [ents, ppl, pls, tgs, wl] = await Promise.all([DB.allEntries(), DB.allPeople(), DB.allPlaces(), DB.allTags(), DB.allWatch()]);
+    const [ents, ppl, pls, tgs, wl, rcp] = await Promise.all([DB.allEntries(), DB.allPeople(), DB.allPlaces(), DB.allTags(), DB.allWatch(), DB.allRecipes()]);
     const pplOut = [];
     for (const p of ppl) pplOut.push({ id: p.id, name: p.name, createdAt: p.createdAt, photo: p.photo ? await blobToDataURL(p.photo) : null });
-    const parts = [`{"app":"digital-journal","version":3,"exportedAt":"${new Date().toISOString()}","entries":${JSON.stringify(ents)},"people":${JSON.stringify(pplOut)},"places":${JSON.stringify(pls)},"tags":${JSON.stringify(tgs)},"watch":${JSON.stringify(wl)},"photos":[`];
+    const parts = [`{"app":"digital-journal","version":3,"exportedAt":"${new Date().toISOString()}","entries":${JSON.stringify(ents)},"people":${JSON.stringify(pplOut)},"places":${JSON.stringify(pls)},"tags":${JSON.stringify(tgs)},"watch":${JSON.stringify(wl)},"recipes":${JSON.stringify(rcp)},"photos":[`];
     // Photos one at a time (decrypting each if the journal is locked), skipping unsaved draft photos
     let first = true;
     for (const id of await DB.keys('photos')) {
@@ -2111,7 +2118,8 @@
       for (const t of tgs) { const ex = byName.get(t.name.toLowerCase()); if (ex && ex !== t.id) remap.set(t.id, ex); else { newTags.push(t); byName.set(t.name.toLowerCase(), t.id); } }
       if (remap.size) ents.forEach((e) => { e.tags = [...new Set(e.tags.map((id) => remap.get(id) || id))]; });
       const wl = (data.watch || []).filter((w) => w && w.id && w.title && ['anime', 'movie', 'tv'].includes(w.kind)).map((w) => ({ ...w, info: w.info || {}, history: Array.isArray(w.history) ? w.history : [] }));
-      await DB.putMany({ entries: ents, photos, people: ppl, places: pls, tags: newTags, watch: wl });
+      const rcp = (data.recipes || []).filter((r) => r && r.id && r.title).map((r) => ({ ...r, ingredients: Array.isArray(r.ingredients) ? r.ingredients : [], steps: Array.isArray(r.steps) ? r.steps : [], cats: Array.isArray(r.cats) ? r.cats : [], cooked: Array.isArray(r.cooked) ? r.cooked : [] }));
+      await DB.putMany({ entries: ents, photos, people: ppl, places: pls, tags: newTags, watch: wl, recipes: rcp });
       photos.forEach((p) => forgetPhoto(p.id));
       await loadAll();
       toast(`Imported ${plural(ents.length, 'entry', 'entries')}`);
@@ -4086,6 +4094,7 @@
       ['Calendar', 'The <a href="#/calendar">Calendar</a> shows a little photo on each day you wrote. Switch to <b>Moods</b> to color each day by its mood. Click a day to open it.', 'calendar.webp', 'The calendar with photo thumbnails'],
       ['Recaps', 'In <a href="#/recap">Recaps</a>, choose <b>Week</b>, <b>Month</b> or <b>Year</b>. You see your numbers, moods, favorites, photos and entries. The year recap has <b>Play your year in review</b>, which you can also save as a video.', 'recap.webp', 'A month recap'],
       ['Read it like a book', 'On Journal, click <b>📖 Book</b>. Turn pages with the arrow buttons, the arrow keys, or by swiping. Click <b>Open</b> on a page to go to that entry.', 'book.webp', 'Book mode with two pages side by side'],
+      ['Moving memories on Home', 'The <b>Memories</b> row on the <a href="#/">Home</a> page slowly glides random photos from your journal from left to right: when one slides off the right, a new one comes in on the left. Hover over it to pause, and click a photo to open its entry. It stands still if your computer is set to reduce motion.', 'home-strip.webp', 'The moving Memories row'],
     ] },
     { id: 'page', icon: '🎨', title: 'Decorate a journal page', sub: 'Stickers, tape, drawing, backgrounds and layouts', steps: [
       ['Open Edit page', 'Open an entry and click <b>Edit page</b>. The tools panel opens at the bottom. Drag anything on the page to move it, use the round corner handle to resize it, and the top handle to turn it. Add <b>stickers</b>, <b>washi tape</b>, <b>notes</b>, more <b>photos</b> or your own <b>PNG</b> images from the tabs.', 'pe-stickers.webp', 'Edit page with the stickers tab open'],
@@ -4130,6 +4139,13 @@
       ['Rate it', 'Finished shows have five stars. Click exactly where you want: near the end of the fourth star gives about 3.8, the middle of the fifth gives 4.5. Fractions are fine. Click again to change it.', 'watch-rate.webp', 'A finished movie rated 4.3 stars'],
       ['Details, dates and notes', 'Click a poster to open its details. You can change the status, the start and finish dates, episodes, your rating, and add notes. Click the picture to use your own. Finished shows have <b>↻ Watch again</b>, which keeps the earlier dates.', 'watch-details.webp', 'The details window'],
       ['The watch calendar', 'Click <b>Calendar</b> at the top of the Watch list. Each show is a bar from the day you started to the day you finished; shows you’re still watching run up to today. Pink is anime, yellow is movies, blue is TV series. Click a bar to open it.', 'watch-calendar.webp', 'The watch calendar with bars for each show'],
+    ] },
+    { id: 'recipes', icon: '🍲', title: 'Recipes', sub: 'Your recipe book: amounts, steps you can drag, timers and cooking mode', steps: [
+      ['Write a recipe', 'Open <a href="#/recipes">Recipes</a> and click <b>+ New recipe</b>. Add a name, a photo, servings, prep and cook time, and tick categories (or make your own with <b>+ New</b>).', 'recipe-view.webp', 'A saved recipe'],
+      ['Ingredients with suggestions', 'Type an amount (1, ½, 1 1/2 or 2–3), pick a unit such as <b>tsp</b>, <b>tbsp</b>, <b>cup</b>, <b>pinch</b> or <b>to taste</b>, then start typing the name. Suggestions appear; ingredients you’ve used before come first and bring their unit with them. Use ↓ and Enter to pick one; Enter on an empty spot adds the next row.', 'recipe-ingr.webp', 'Ingredient suggestions while typing'],
+      ['Steps you can reorder', 'Write one step per box. Drag the <b>⠿</b> handle up or down to change the order (ingredients can be dragged the same way). If a step mentions a time, like “simmer for 10 minutes”, it gets a timer button; you can also type the minutes yourself.', 'recipe-steps.webp', 'Steps with drag handles and timers'],
+      ['Copy from another recipe', 'Click <b>Copy steps from another recipe</b> (or <b>Copy from another recipe</b> next to Ingredients), choose the recipe, tick what you want and click <b>Add</b>. The copies go at the end, ready to drag into place.', 'recipe-copy.webp', 'Choosing steps to copy'],
+      ['Cook it', 'On a recipe, use <b>−</b> and <b>+</b> next to Servings and every amount changes to match. <b>▶ Start cooking</b> shows one big step at a time and keeps the screen on; press → or swipe for the next step, open <b>Ingredients</b> to tick things off, and start timers. Timers keep running and beep when time’s up. At the end, <b>Mark as cooked today</b> keeps a log.', 'recipe-cook.webp', 'Cooking mode with ingredients and a timer'],
     ] },
     { id: 'backup', icon: '💾', title: 'Automatic backup', sub: 'Choose how often and where your backups go', steps: [
       ['Find it', 'Open <a href="#/settings/backup">Settings → Backup</a>. <b>Export backup</b> saves a backup file right now; <b>Import backup</b> brings one back.', 'backup-panel.webp', 'The Backup section'],
@@ -4599,6 +4615,542 @@
       <div class="w-strip">${list.map((w) => `<button type="button" class="w-mini" data-action="watch-open" data-id="${w.id}">${posterHTML(w)}<b>${esc(w.title)}</b><small>${w.kind !== 'movie' && w.ep ? `Ep ${w.ep}${w.info.episodes ? ` / ${w.info.episodes}` : ''}` : esc(wDates(w))}</small></button>`).join('')}</div></section>`;
   }
 
+  // ---------- Moving memories strip (Home) ----------
+  // Photos glide from left to right. When one slides out on the right, a new random memory
+  // enters on the left. Hover to pause; click a photo to open its entry.
+  const strip = { raf: 0, tiles: [], last: 0, el: null, track: null, deck: [], hover: false, w: 0, h: 0, gap: 12, n: 10, speed: 0, cw: 0, ro: null };
+  const stripPool = () => entries.flatMap((e) => e.photoIds.map((pid) => ({ pid, e })));
+  function memStripHTML() {
+    if (stripPool().length < 3) return '';
+    return `<section class="home-sec mstrip-sec"><header><h2>Memories</h2><span class="muted">Hover to pause · click a photo to open it</span></header>
+      <div class="mstrip" id="mstrip" role="region" aria-label="Photos from your memories, moving slowly"><div class="mstrack"></div></div></section>`;
+  }
+  function stopStrip() {
+    cancelAnimationFrame(strip.raf); strip.raf = 0;
+    if (strip.ro) { strip.ro.disconnect(); strip.ro = null; }
+    strip.tiles = []; strip.el = null; strip.track = null;
+  }
+  function stripNext() {
+    const visible = new Set(strip.tiles.map((t) => t.pid));
+    for (let tries = 0; tries < 2; tries++) {
+      if (!strip.deck.length) strip.deck = shuffle(stripPool());
+      while (strip.deck.length) { const c = strip.deck.pop(); if (!visible.has(c.pid) || stripPool().length <= strip.n) return c; }
+    }
+    return pick(stripPool());
+  }
+  function stripTile(x) {
+    const c = stripNext();
+    const a = document.createElement('a');
+    a.className = 'mstile entering';
+    a.href = `#/entry/${c.e.id}`;
+    a.style.width = strip.w + 'px'; a.style.height = strip.h + 'px';
+    a.innerHTML = `${imgTag(c.pid, 'thumb', c.e.title || '')}<span class="ms-cap"><b>${esc(c.e.title || D.short(c.e.date))}</b><small>${esc(D.short(c.e.date))}</small></span>`;
+    a.setAttribute('aria-label', `${c.e.title || 'Memory'}, ${D.long(c.e.date)}`);
+    strip.track.appendChild(a);
+    fillImg($('img', a));
+    requestAnimationFrame(() => a.classList.remove('entering'));
+    const t = { el: a, x, pid: c.pid };
+    a.style.transform = `translate3d(${x}px,0,0)`;
+    return t;
+  }
+  function stripLayout() {
+    const el = strip.el; if (!el) return;
+    strip.cw = el.clientWidth;
+    strip.n = strip.cw < 440 ? 4 : strip.cw < 640 ? 5 : strip.cw < 820 ? 7 : 10; // 10 photos at a time on a computer
+    strip.gap = strip.cw < 520 ? 8 : 12;
+    strip.w = (strip.cw - strip.gap * (strip.n - 1)) / strip.n;
+    strip.h = Math.round(strip.w * 1.2);
+    el.style.height = strip.h + 'px';
+    strip.speed = (strip.w + strip.gap) / 3.6; // one photo's width every 3.6 seconds
+    strip.track.innerHTML = ''; strip.tiles = [];
+    for (let i = -1; i < strip.n; i++) strip.tiles.push(stripTile(i * (strip.w + strip.gap)));
+  }
+  function stripFrame(now) {
+    if (!strip.el || !strip.el.isConnected) { stopStrip(); return; }
+    const dt = Math.min(0.1, (now - (strip.last || now)) / 1000); strip.last = now;
+    if (!strip.hover && document.visibilityState === 'visible') {
+      const dx = strip.speed * dt;
+      for (const t of strip.tiles) { t.x += dx; t.el.style.transform = `translate3d(${t.x.toFixed(2)}px,0,0)`; }
+      // The photo on the right has slid out: remove it and bring a new one in on the left
+      const out = strip.tiles.filter((t) => t.x >= strip.cw);
+      if (out.length) {
+        out.forEach((t) => t.el.remove());
+        strip.tiles = strip.tiles.filter((t) => t.x < strip.cw);
+        const minX = Math.min(...strip.tiles.map((t) => t.x));
+        strip.tiles.unshift(stripTile(minX - (strip.w + strip.gap)));
+      }
+    }
+    strip.raf = requestAnimationFrame(stripFrame);
+  }
+  function stripInit() {
+    stopStrip();
+    const el = $('#mstrip'); if (!el) return;
+    strip.el = el; strip.track = $('.mstrack', el); strip.deck = []; strip.last = 0;
+    stripLayout();
+    el.addEventListener('mouseenter', () => { strip.hover = true; });
+    el.addEventListener('mouseleave', () => { strip.hover = false; });
+    el.addEventListener('focusin', () => { strip.hover = true; });
+    el.addEventListener('focusout', () => { strip.hover = false; });
+    let lastW = el.clientWidth;
+    if ('ResizeObserver' in window) { strip.ro = new ResizeObserver(() => { if (Math.abs(el.clientWidth - lastW) > 30) { lastW = el.clientWidth; stripLayout(); } }); strip.ro.observe(el); }
+    if (reducedMotion()) return; // a still row of photos when the computer asks for less motion
+    strip.raf = requestAnimationFrame(stripFrame);
+  }
+
+  // ---------- Recipes ----------
+  const R_UNITS = [['', '—'], ['tsp', 'tsp (teaspoon)'], ['tbsp', 'tbsp (tablespoon)'], ['cup', 'cup'], ['pinch', 'pinch'], ['dash', 'dash'], ['handful', 'handful'],
+    ['g', 'g (grams)'], ['kg', 'kg'], ['ml', 'ml'], ['l', 'l (liters)'], ['oz', 'oz'], ['lb', 'lb'], ['piece', 'piece'], ['clove', 'clove'], ['slice', 'slice'],
+    ['can', 'can'], ['packet', 'packet'], ['bunch', 'bunch'], ['stick', 'stick'], ['to taste', 'to taste']];
+  const R_PLURAL = { cup: 'cups', pinch: 'pinches', dash: 'dashes', handful: 'handfuls', piece: 'pieces', clove: 'cloves', slice: 'slices', can: 'cans', packet: 'packets', bunch: 'bunches', stick: 'sticks' };
+  const R_CATS = ['Breakfast', 'Lunch', 'Dinner', 'Snack', 'Dessert', 'Drink', 'Bengali', 'Quick', 'Vegetarian', 'Baking'];
+  // Common ingredients for suggestions. Ingredients you've used before come first.
+  const R_INGR = ('salt,black pepper,sugar,brown sugar,honey,jaggery,olive oil,vegetable oil,mustard oil,ghee,butter,water,milk,cream,yogurt,cheese,cheddar cheese,mozzarella,parmesan,paneer,eggs,egg yolks,egg whites,'
+    + 'all-purpose flour,whole wheat flour,atta,semolina,cornstarch,rice flour,gram flour (besan),baking powder,baking soda,yeast,vanilla extract,cocoa powder,chocolate chips,dark chocolate,'
+    + 'rice,basmati rice,chinigura rice,flattened rice (chira),puffed rice (muri),pasta,spaghetti,noodles,bread,breadcrumbs,oats,lentils,red lentils (masoor dal),yellow lentils (moong dal),chickpeas,kidney beans,black beans,'
+    + 'onion,red onion,shallots,garlic,ginger,ginger-garlic paste,green chili,dried red chili,tomato,tomato paste,tomato puree,potato,sweet potato,carrot,peas,green beans,cauliflower,cabbage,broccoli,spinach,eggplant,'
+    + 'okra,pumpkin,bottle gourd,bitter gourd,cucumber,bell pepper,capsicum,mushrooms,corn,lettuce,celery,spring onion,leek,zucchini,radish,beetroot,'
+    + 'coriander leaves (cilantro),mint leaves,parsley,basil,curry leaves,bay leaves,thyme,rosemary,oregano,dill,lemongrass,'
+    + 'turmeric powder,cumin seeds,cumin powder,coriander powder,red chili powder,kashmiri chili powder,paprika,garam masala,chaat masala,panch phoron,mustard seeds,fenugreek seeds,nigella seeds (kalonji),fennel seeds,'
+    + 'cardamom,green cardamom,black cardamom,cinnamon stick,ground cinnamon,cloves,star anise,nutmeg,mace,saffron,asafoetida (hing),black salt,white pepper,chili flakes,'
+    + 'chicken,chicken breast,chicken thighs,beef,mutton,lamb,ground beef,minced meat,fish,hilsa (ilish),rohu (rui),salmon,tuna,shrimp,prawns,'
+    + 'lemon,lemon juice,lime,lime juice,orange,apple,banana,mango,coconut,coconut milk,desiccated coconut,raisins,dates,almonds,cashews,peanuts,pistachios,walnuts,sesame seeds,'
+    + 'soy sauce,vinegar,fish sauce,oyster sauce,ketchup,mayonnaise,mustard,chili sauce,hot sauce,tamarind,tamarind paste,rose water,kewra water,condensed milk,evaporated milk,milk powder,tea leaves,coffee,ice').split(',');
+  const rById = (id) => recipes.find((r) => r.id === id);
+  const parseQty = (s) => {
+    s = String(s || '').trim().replace(/½/g, ' 1/2').replace(/¼/g, ' 1/4').replace(/¾/g, ' 3/4').replace(/⅓/g, ' 1/3').replace(/⅔/g, ' 2/3').replace(/⅛/g, ' 1/8').trim();
+    if (!s) return null;
+    const one = (t) => { t = t.trim(); let m;
+      if ((m = t.match(/^(\d+)\s+(\d+)\/(\d+)$/))) return +m[1] + m[2] / m[3];
+      if ((m = t.match(/^(\d+)\/(\d+)$/))) return m[1] / m[2];
+      if (/^\d*\.?\d+$/.test(t)) return parseFloat(t);
+      return null; };
+    const range = s.split(/\s*(?:-|–|to)\s*/);
+    if (range.length === 2) { const a = one(range[0]), b = one(range[1]); return a != null && b != null ? [a, b] : null; }
+    const v = one(s); return v == null ? null : v;
+  };
+  const FRACS = [[0, ''], [0.125, '⅛'], [0.25, '¼'], [1 / 3, '⅓'], [0.5, '½'], [2 / 3, '⅔'], [0.75, '¾'], [1, '']];
+  function fmtQty(v, unit) {
+    if (Array.isArray(v)) return `${fmtQty(v[0], unit)}–${fmtQty(v[1], unit)}`;
+    if (v == null) return '';
+    if (['g', 'ml'].includes(unit)) return String(Math.round(v));
+    if (['kg', 'l', 'lb', 'oz'].includes(unit)) return String(Math.round(v * 100) / 100);
+    const whole = Math.floor(v + 1e-6), rest = v - whole;
+    let best = FRACS[0]; for (const f of FRACS) if (Math.abs(rest - f[0]) < Math.abs(rest - best[0])) best = f;
+    const w = best[0] === 1 ? whole + 1 : whole;
+    return (w ? String(w) : '') + (best[1] ? (w ? ' ' : '') + best[1] : '') || (v > 0 ? '⅛' : '0');
+  }
+  function ingrLine(ing, factor = 1) {
+    if (ing.unit === 'to taste' && !ing.qty) return `${esc(ing.name)} <span class="muted">to taste</span>${ing.note ? `<span class="muted">, ${esc(ing.note)}</span>` : ''}`;
+    const q = parseQty(ing.qty);
+    const scaled = q == null ? ing.qty : Array.isArray(q) ? q.map((x) => x * factor) : q * factor;
+    const qtxt = q == null ? esc(ing.qty || '') : fmtQty(scaled, ing.unit);
+    const n = Array.isArray(scaled) ? scaled[1] : scaled;
+    const unit = ing.unit && ing.unit !== 'to taste' ? (typeof n === 'number' && n > 1 && R_PLURAL[ing.unit] ? R_PLURAL[ing.unit] : ing.unit) : '';
+    return `<b class="ri-q">${[qtxt, esc(unit)].filter(Boolean).join(' ')}</b> ${esc(ing.name)}${ing.note ? `<span class="muted">, ${esc(ing.note)}</span>` : ''}`;
+  }
+  const rTotal = (r) => (Number(r.prep) || 0) + (Number(r.cook) || 0);
+  const fmtMins = (m) => (!m ? '' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`);
+  const rPhoto = (r, kind = 'md') => r.photoId ? imgTag(r.photoId, kind, r.title) : `<span class="r-noimg">🍲</span>`;
+  // A step that mentions a time ("simmer for 10 minutes") gets a timer button
+  function stepMinutes(step) {
+    if (step.timer) return Number(step.timer);
+    const m = String(step.text || '').match(/(\d+(?:\.\d+)?)\s*(?:(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*)?(hours?|hrs?|h\b|minutes?|mins?|m\b)/i);
+    if (!m) return 0;
+    const v = Number(m[2] || m[1]);
+    return /^h/i.test(m[3]) ? Math.round(v * 60) : Math.round(v);
+  }
+
+  // List
+  function renderRecipes() {
+    view.dataset.title = 'Recipes';
+    const q = (state.rq || '').toLowerCase(), cat = state.rcat || '';
+    const cats = [...new Set([...R_CATS.filter((c) => recipes.some((r) => (r.cats || []).includes(c))), ...recipes.flatMap((r) => r.cats || [])])];
+    let list = recipes.filter((r) => (!cat || (cat === '★' ? r.fav : (r.cats || []).includes(cat)))
+      && (!q || r.title.toLowerCase().includes(q) || (r.ingredients || []).some((i) => i.name.toLowerCase().includes(q)) || (r.cats || []).some((c) => c.toLowerCase().includes(q))));
+    list = list.sort((a, b) => (b.fav - a.fav) || (b.updatedAt || 0) - (a.updatedAt || 0));
+    view.innerHTML = `<div class="page-wide recipes-page">
+      <header class="page-head"><h1>Recipes</h1><a class="btn btn-primary" href="#/recipe/new">+ New recipe</a></header>
+      ${recipes.length ? `<div class="r-tools"><input class="text-input r-search" id="rSearch" type="search" placeholder="Search recipes or ingredients (e.g. chicken, potato)" value="${esc(state.rq || '')}">
+        <div class="r-cats"><button type="button" data-rcat="" aria-pressed="${!cat}">All <small>${recipes.length}</small></button>${recipes.some((r) => r.fav) ? `<button type="button" data-rcat="★" aria-pressed="${cat === '★'}">★ Favorites</button>` : ''}${cats.map((c) => `<button type="button" data-rcat="${esc(c)}" aria-pressed="${cat === c}">${esc(c)}</button>`).join('')}</div></div>` : ''}
+      ${list.length ? `<div class="r-grid">${list.map((r) => `<a class="r-card" href="#/recipe/${r.id}"><span class="r-img">${rPhoto(r, 'md')}${r.fav ? '<span class="r-fav">★</span>' : ''}</span>
+          <span class="r-body"><b>${esc(r.title)}</b><small>${esc([fmtMins(rTotal(r)), r.servings ? `serves ${r.servings}` : '', `${(r.ingredients || []).length} ingredients`].filter(Boolean).join(' · '))}</small>
+          ${(r.cats || []).length ? `<span class="r-chips">${r.cats.slice(0, 3).map((c) => `<span>${esc(c)}</span>`).join('')}</span>` : ''}</span></a>`).join('')}</div>`
+        : recipes.length ? `<p class="no-results">No recipes match. Try another word.</p>`
+        : `<div class="empty"><h2>Your recipe book</h2><p>Save the dishes you love: ingredients with amounts, steps you can reorder, photos, and a cooking mode with timers.</p><a class="btn btn-primary" href="#/recipe/new">+ Write your first recipe</a></div>`}
+    </div>`;
+    const s = $('#rSearch');
+    if (s) { s.addEventListener('input', () => { state.rq = s.value; const pos = s.selectionStart; renderRecipes(); hydrate(view); const n = $('#rSearch'); n.focus(); n.setSelectionRange(pos, pos); }); }
+  }
+  view.addEventListener('click', (ev) => { const c = ev.target.closest('[data-rcat]'); if (!c) return; state.rcat = c.dataset.rcat; renderRecipes(); hydrate(view); });
+
+  // View one recipe
+  function renderRecipe(id, mode) {
+    if (id === 'new' || mode === 'edit') return renderRecipeEdit(id === 'new' ? null : rById(id));
+    const r = rById(id);
+    if (!r) { view.innerHTML = `<div class="page">${backBtn}<p class="no-results">This recipe no longer exists.</p></div>`; return; }
+    view.dataset.title = r.title;
+    const serv = state.rServ && state.rServ.id === r.id ? state.rServ.n : (r.servings || 0);
+    const factor = r.servings && serv ? serv / r.servings : 1;
+    const cooked = r.cooked || [];
+    view.innerHTML = `<div class="page-wide recipe-view">
+      <div class="rv-bar">${backBtn}<span class="spacer"></span>
+        <button class="btn btn-line" data-action="recipe-print">Print</button>
+        <a class="btn btn-line" href="#/recipe/${r.id}/edit">Edit</a>
+        <button class="btn btn-primary" data-action="recipe-cook" data-id="${r.id}">▶ Start cooking</button></div>
+      <article class="rv">
+        <div class="rv-hero">${r.photoId ? `<span class="rv-img">${imgTag(r.photoId, 'full', r.title)}</span>` : ''}
+          <div class="rv-head">
+            <h1>${esc(r.title)}</h1>
+            ${(r.cats || []).length ? `<p class="r-chips">${r.cats.map((c) => `<span>${esc(c)}</span>`).join('')}</p>` : ''}
+            <div class="rv-facts">
+              ${r.prep ? `<span><small>Prep</small><b>${fmtMins(+r.prep)}</b></span>` : ''}${r.cook ? `<span><small>Cook</small><b>${fmtMins(+r.cook)}</b></span>` : ''}${rTotal(r) ? `<span><small>Total</small><b>${fmtMins(rTotal(r))}</b></span>` : ''}
+              ${r.servings ? `<span class="rv-serv"><small>Servings</small><span class="row-tight"><button type="button" class="icon-btn sm" data-action="recipe-serv" data-d="-1" data-id="${r.id}" aria-label="Fewer servings">−</button><b>${serv}</b><button type="button" class="icon-btn sm" data-action="recipe-serv" data-d="1" data-id="${r.id}" aria-label="More servings">+</button></span></span>` : ''}
+            </div>
+            <div class="row-tight rv-acts">
+              <button class="btn btn-line" data-action="recipe-fav" data-id="${r.id}" aria-pressed="${!!r.fav}">${r.fav ? '★ Favorite' : '☆ Favorite'}</button>
+              <button class="btn btn-line" data-action="recipe-cooked" data-id="${r.id}">🍳 I cooked this today</button>
+            </div>
+            <p class="muted">${cooked.length ? `Cooked ${plural(cooked.length, 'time')} · last on ${esc(D.long(cooked[cooked.length - 1]))}` : 'Not cooked yet.'}${factor !== 1 ? ` · Amounts changed for ${serv} servings` : ''}</p>
+          </div></div>
+        <div class="rv-cols">
+          <section class="rv-ingr"><h2>Ingredients</h2>
+            <ul class="ri-list">${(r.ingredients || []).map((i, k) => `<li><label><input type="checkbox" data-ri="${k}"><span>${ingrLine(i, factor)}</span></label></li>`).join('') || '<li class="muted">No ingredients yet.</li>'}</ul>
+            <p class="muted">Tick things off as you gather them.</p></section>
+          <section class="rv-steps"><h2>Steps</h2>
+            <ol class="rs-list">${(r.steps || []).map((s, k) => { const m = stepMinutes(s); return `<li><span class="rs-n">${k + 1}</span><div><p>${esc(s.text).replace(/\n/g, '<br>')}</p>${m ? `<button type="button" class="btn btn-line rs-timer" data-action="recipe-timer" data-min="${m}" data-label="${esc(r.title)}, step ${k + 1}">⏱ ${fmtMins(m)} timer</button>` : ''}</div></li>`; }).join('') || '<li class="muted">No steps yet.</li>'}</ol></section>
+        </div>
+        ${r.notes ? `<section class="rv-notes"><h2>Notes</h2><p>${esc(r.notes).replace(/\n/g, '<br>')}</p></section>` : ''}
+        ${r.source ? `<p class="rv-src">Source: ${/^https?:\/\//i.test(r.source) ? `<a class="link" href="${esc(r.source)}" target="_blank" rel="noopener">${esc(r.source.replace(/^https?:\/\/(www\.)?/, '').slice(0, 60))}</a>` : esc(r.source)}</p>` : ''}
+      </article>
+      <div class="rv-danger"><button class="btn btn-danger" data-action="recipe-delete" data-id="${r.id}">Delete recipe</button></div>
+    </div>`;
+    timersBar();
+  }
+
+  // Edit a recipe
+  let re = null;
+  function renderRecipeEdit(r) {
+    const isNew = !r;
+    r = r ? JSON.parse(JSON.stringify(r)) : { id: uid(), title: '', photoId: '', servings: 2, prep: '', cook: '', cats: [], fav: false, source: '', notes: '', ingredients: [], steps: [], cooked: [], createdAt: Date.now() };
+    if (!r.ingredients.length) r.ingredients.push({ id: uid(), qty: '', unit: '', name: '', note: '' });
+    if (!r.steps.length) r.steps.push({ id: uid(), text: '', timer: '' });
+    re = { r, isNew, photo: null, photoUrl: '', dirty: false, drag: null };
+    view.dataset.title = isNew ? 'New recipe' : 'Edit ' + r.title;
+    view.innerHTML = `<div class="page recipe-edit">
+      <div class="rv-bar"><button class="btn btn-ghost" data-re="cancel">Cancel</button><h1>${isNew ? 'New recipe' : 'Edit recipe'}</h1><span class="spacer"></span><button class="btn btn-primary" data-re="save">Save recipe</button></div>
+      <section class="panel re-top">
+        <label class="re-photo">${r.photoId ? imgTag(r.photoId, 'md') : '<span class="r-noimg">📷<small>Add a photo</small></span>'}<input type="file" accept="image/*" id="rePhoto" hidden></label>
+        <div class="re-fields">
+          <input id="reTitle" class="text-input re-title" placeholder="Recipe name, e.g. Chicken korma" value="${esc(r.title)}" maxlength="140">
+          <div class="re-nums">
+            <label class="field"><span>Servings</span><input id="reServ" class="text-input" type="number" min="1" max="99" value="${r.servings || ''}"></label>
+            <label class="field"><span>Prep (min)</span><input id="rePrep" class="text-input" type="number" min="0" value="${r.prep || ''}"></label>
+            <label class="field"><span>Cook (min)</span><input id="reCook" class="text-input" type="number" min="0" value="${r.cook || ''}"></label>
+          </div>
+          <div class="re-cats" id="reCats"></div>
+        </div>
+      </section>
+      <section class="panel"><div class="re-h"><h2>Ingredients</h2><button type="button" class="linkbtn" data-re="copy" data-what="ingredients">Copy from another recipe</button></div>
+        <p class="muted">Type an amount like 1, ½, 1 1/2 or 2–3. Suggestions appear as you type the name; drag ⠿ to reorder.</p>
+        <div class="re-ingr" id="reIngr"></div>
+        <button type="button" class="btn btn-line" data-re="add-ingr">+ Add ingredient</button></section>
+      <section class="panel"><div class="re-h"><h2>Steps</h2><button type="button" class="linkbtn" data-re="copy" data-what="steps">Copy steps from another recipe</button></div>
+        <p class="muted">Drag ⠿ to change the order. A time like “10 minutes” in a step gets a timer automatically, or set one.</p>
+        <div class="re-steps" id="reSteps"></div>
+        <button type="button" class="btn btn-line" data-re="add-step">+ Add step</button></section>
+      <section class="panel"><h2>More</h2>
+        <label class="field"><span>Source (website, book or person)</span><input id="reSrc" class="text-input" value="${esc(r.source || '')}" placeholder="https://… or Ammu’s recipe"></label>
+        <label class="field" style="margin-top:12px"><span>Notes</span><textarea id="reNotes" class="text-input re-notes" rows="3" placeholder="Tips, changes you made, what to serve it with…">${esc(r.notes || '')}</textarea></label></section>
+      <div class="rv-bar end"><button class="btn btn-ghost" data-re="cancel">Cancel</button><button class="btn btn-primary" data-re="save">Save recipe</button></div>
+    </div>`;
+    drawReCats(); drawReIngr(); drawReSteps();
+    view.querySelectorAll('#reTitle,#reServ,#rePrep,#reCook,#reSrc,#reNotes').forEach((el) => el.addEventListener('input', () => { re.dirty = true; }));
+    $('#rePhoto').addEventListener('change', async (ev) => {
+      const f = ev.target.files[0]; if (!f) return;
+      try { re.photo = await processImage(f); re.dirty = true; $('.re-photo').firstElementChild.outerHTML = `<img src="${URL.createObjectURL(re.photo.md)}" alt="" class="loaded">`; }
+      catch (_) { toast('That photo couldn’t be opened. Try a JPEG or PNG.'); }
+    });
+  }
+  function drawReCats() {
+    const all = [...new Set([...R_CATS, ...recipes.flatMap((r) => r.cats || []), ...re.r.cats])];
+    $('#reCats').innerHTML = all.map((c) => `<button type="button" class="chip" data-re="cat" data-v="${esc(c)}" aria-pressed="${re.r.cats.includes(c)}">${esc(c)}</button>`).join('') + `<button type="button" class="chip add" data-re="new-cat">+ New</button>`;
+  }
+  const unitSel = (u, k) => `<select class="text-input re-unit" data-k="${k}" aria-label="Unit">${R_UNITS.map(([v, n]) => `<option value="${v}"${v === u ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+  function drawReIngr(focusK = -1) {
+    $('#reIngr').innerHTML = re.r.ingredients.map((i, k) => `<div class="re-row${re.drag && re.drag.list === 'ingredients' && re.drag.id === i.id && re.drag.on ? ' dragging' : ''}" data-id="${i.id}">
+      <span class="re-grip" data-grip="ingredients" title="Drag to reorder" aria-hidden="true">⠿</span>
+      <input class="text-input re-qty" data-k="${k}" value="${esc(i.qty)}" placeholder="1 ½" aria-label="Amount" inputmode="text">
+      ${unitSel(i.unit, k)}
+      <span class="re-namewrap"><input class="text-input re-name" data-k="${k}" value="${esc(i.name)}" placeholder="Ingredient" autocomplete="off" aria-label="Ingredient" role="combobox" aria-expanded="false"><span class="re-sugg" hidden></span></span>
+      <input class="text-input re-note" data-k="${k}" value="${esc(i.note || '')}" placeholder="chopped, optional…" aria-label="Note">
+      <button type="button" class="icon-btn sm" data-re="del-ingr" data-k="${k}" aria-label="Remove ingredient">${ICON.x}</button></div>`).join('');
+    if (focusK >= 0) { const el = $(`#reIngr .re-name[data-k="${focusK}"]`); if (el) el.focus(); }
+  }
+  function drawReSteps(focusK = -1) {
+    $('#reSteps').innerHTML = re.r.steps.map((s, k) => `<div class="re-row re-step${re.drag && re.drag.list === 'steps' && re.drag.id === s.id && re.drag.on ? ' dragging' : ''}" data-id="${s.id}">
+      <span class="re-grip" data-grip="steps" title="Drag to reorder" aria-hidden="true">⠿</span>
+      <span class="rs-n">${k + 1}</span>
+      <textarea class="text-input re-stext" data-k="${k}" rows="2" placeholder="Describe this step…">${esc(s.text)}</textarea>
+      <label class="re-tmr" title="Timer in minutes (optional)">⏱<input class="text-input" data-k="${k}" type="number" min="0" value="${s.timer || ''}" placeholder="${stepMinutes({ text: s.text }) || 'min'}"></label>
+      <button type="button" class="icon-btn sm" data-re="del-step" data-k="${k}" aria-label="Remove step">${ICON.x}</button></div>`).join('');
+    $$('#reSteps textarea').forEach((t) => { t.style.height = 'auto'; t.style.height = Math.max(54, t.scrollHeight) + 'px'; });
+    if (focusK >= 0) { const el = $(`#reSteps textarea[data-k="${focusK}"]`); if (el) el.focus(); }
+  }
+  // Ingredient suggestions: the ones you've used before first, then common ingredients
+  function ingrSuggestions(q) {
+    q = q.trim().toLowerCase(); if (!q) return [];
+    const used = new Map();
+    recipes.forEach((r) => (r.ingredients || []).forEach((i) => { const n = i.name.trim(); if (n) { const k = n.toLowerCase(); const o = used.get(k) || { name: n, count: 0, unit: i.unit }; o.count++; used.set(k, o); } }));
+    const score = (n) => { const l = n.toLowerCase(); return l.startsWith(q) ? 0 : l.split(/[\s(]+/).some((w) => w.startsWith(q)) ? 1 : l.includes(q) ? 2 : 9; };
+    const mine = [...used.values()].filter((o) => score(o.name) < 9).sort((a, b) => score(a.name) - score(b.name) || b.count - a.count).map((o) => ({ name: o.name, unit: o.unit, mine: true }));
+    const seen = new Set(mine.map((o) => o.name.toLowerCase()));
+    const common = R_INGR.filter((n) => score(n) < 9 && !seen.has(n)).sort((a, b) => score(a) - score(b) || a.length - b.length).map((n) => ({ name: n }));
+    return [...mine, ...common].filter((o) => o.name.toLowerCase() !== q || o.mine).slice(0, 8);
+  }
+  function showSugg(input) {
+    const k = Number(input.dataset.k), box = input.nextElementSibling;
+    const list = ingrSuggestions(input.value);
+    re.sugg = { k, list, i: -1 };
+    if (!list.length) { box.hidden = true; input.setAttribute('aria-expanded', 'false'); return; }
+    box.innerHTML = list.map((s, j) => `<button type="button" class="re-sg" data-sg="${j}" tabindex="-1">${esc(s.name)}${s.mine ? ' <small>used before</small>' : ''}</button>`).join('');
+    box.hidden = false; input.setAttribute('aria-expanded', 'true');
+  }
+  function pickSugg(j) {
+    const s = re.sugg && re.sugg.list[j]; if (!s) return;
+    const ing = re.r.ingredients[re.sugg.k]; ing.name = s.name;
+    if (s.unit && !ing.unit) ing.unit = s.unit;
+    re.dirty = true;
+    const row = $(`#reIngr .re-row[data-id="${ing.id}"]`);
+    $('.re-name', row).value = s.name; $('.re-unit', row).value = ing.unit;
+    $('.re-sugg', row).hidden = true; re.sugg = null;
+    $('.re-note', row).focus();
+  }
+  view.addEventListener('input', (ev) => {
+    if (!re || !$('.recipe-edit')) return;
+    const t = ev.target, k = Number(t.dataset.k);
+    if (t.matches('.re-qty')) re.r.ingredients[k].qty = t.value;
+    else if (t.matches('.re-name')) { re.r.ingredients[k].name = t.value; showSugg(t); }
+    else if (t.matches('.re-note')) re.r.ingredients[k].note = t.value;
+    else if (t.matches('.re-stext')) { re.r.steps[k].text = t.value; t.style.height = 'auto'; t.style.height = Math.max(54, t.scrollHeight) + 'px'; const tm = t.parentElement.querySelector('.re-tmr input'); if (tm && !tm.value) tm.placeholder = stepMinutes({ text: t.value }) || 'min'; }
+    else if (t.matches('.re-tmr input')) re.r.steps[k].timer = t.value;
+    else return;
+    re.dirty = true;
+  });
+  view.addEventListener('change', (ev) => { if (re && ev.target.matches('.re-unit')) { re.r.ingredients[Number(ev.target.dataset.k)].unit = ev.target.value; re.dirty = true; } });
+  view.addEventListener('keydown', (ev) => {
+    if (!re || !$('.recipe-edit')) return;
+    const t = ev.target;
+    if (t.matches('.re-name')) {
+      const s = re.sugg, box = t.nextElementSibling;
+      if (s && !box.hidden && ['ArrowDown', 'ArrowUp'].includes(ev.key)) {
+        ev.preventDefault(); s.i = clamp(s.i + (ev.key === 'ArrowDown' ? 1 : -1), 0, s.list.length - 1);
+        $$('.re-sg', box).forEach((b, j) => b.classList.toggle('on', j === s.i)); return;
+      }
+      if (ev.key === 'Enter') { ev.preventDefault(); if (s && !box.hidden && s.i >= 0) pickSugg(s.i); else { box.hidden = true; addIngr(Number(t.dataset.k) + 1); } return; }
+      if (ev.key === 'Escape' && !box.hidden) { box.hidden = true; ev.stopPropagation(); }
+    }
+    if (t.matches('.re-note') && ev.key === 'Enter') { ev.preventDefault(); addIngr(Number(t.dataset.k) + 1); }
+  });
+  view.addEventListener('focusout', (ev) => { if (ev.target.matches && ev.target.matches('.re-name')) setTimeout(() => { const box = ev.target.nextElementSibling; if (box && !box.contains(document.activeElement)) box.hidden = true; }, 150); });
+  view.addEventListener('mousedown', (ev) => { const b = ev.target.closest('.re-sg'); if (b) { ev.preventDefault(); pickSugg(Number(b.dataset.sg)); } });
+  function addIngr(at) { re.r.ingredients.splice(at, 0, { id: uid(), qty: '', unit: '', name: '', note: '' }); re.dirty = true; drawReIngr(); const q = $(`#reIngr .re-qty[data-k="${at}"]`); if (q) q.focus(); }
+  // Drag ⠿ to reorder ingredients or steps
+  view.addEventListener('pointerdown', (ev) => {
+    const g = ev.target.closest('[data-grip]'); if (!g || !re) return;
+    ev.preventDefault();
+    const row = g.closest('.re-row');
+    re.drag = { list: g.dataset.grip, id: row.dataset.id, y0: ev.clientY, on: false };
+    g.setPointerCapture(ev.pointerId);
+  });
+  view.addEventListener('pointermove', (ev) => {
+    const d = re && re.drag; if (!d) return;
+    if (!d.on) { if (Math.abs(ev.clientY - d.y0) < 4) return; d.on = true; (d.list === 'steps' ? drawReSteps : drawReIngr)(); }
+    const box = d.list === 'steps' ? $('#reSteps') : $('#reIngr');
+    const rows = $$('.re-row', box), arr = re.r[d.list];
+    const from = arr.findIndex((x) => x.id === d.id);
+    let to = rows.findIndex((rw) => { const b = rw.getBoundingClientRect(); return ev.clientY < b.top + b.height / 2; });
+    if (to < 0) to = rows.length - 1; else if (to > from) to -= 1;
+    if (to !== from && to >= 0) { const [m] = arr.splice(from, 1); arr.splice(to, 0, m); re.dirty = true; (d.list === 'steps' ? drawReSteps : drawReIngr)(); }
+    if (ev.clientY < 80) window.scrollBy(0, -12); else if (ev.clientY > window.innerHeight - 80) window.scrollBy(0, 12);
+  });
+  const reDrop = () => { if (re && re.drag) { const l = re.drag.list, was = re.drag.on; re.drag = null; if (was) (l === 'steps' ? drawReSteps : drawReIngr)(); } };
+  view.addEventListener('pointerup', reDrop);
+  view.addEventListener('pointercancel', reDrop);
+  view.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-re]'); if (!b || !re) return;
+    const a = b.dataset.re, k = Number(b.dataset.k);
+    if (a === 'add-ingr') addIngr(re.r.ingredients.length);
+    if (a === 'del-ingr') { re.r.ingredients.splice(k, 1); re.dirty = true; drawReIngr(); }
+    if (a === 'add-step') { re.r.steps.push({ id: uid(), text: '', timer: '' }); re.dirty = true; drawReSteps(re.r.steps.length - 1); }
+    if (a === 'del-step') { re.r.steps.splice(k, 1); re.dirty = true; drawReSteps(); }
+    if (a === 'cat') { const v = b.dataset.v; re.r.cats = re.r.cats.includes(v) ? re.r.cats.filter((x) => x !== v) : [...re.r.cats, v]; re.dirty = true; drawReCats(); }
+    if (a === 'new-cat') { const v = (prompt('Name of the new category') || '').trim().slice(0, 30); if (v) { if (!re.r.cats.includes(v)) re.r.cats.push(v); re.dirty = true; drawReCats(); } }
+    if (a === 'copy') openRecipeCopy(b.dataset.what);
+    if (a === 'cancel') { if (re.dirty && !confirm('Discard your changes to this recipe?')) return; const id = re.r.id, isNew = re.isNew; re = null; go(isNew ? '#/recipes' : `#/recipe/${id}`); }
+    if (a === 'save') saveRecipe();
+  });
+  async function saveRecipe() {
+    const r = re.r;
+    r.title = $('#reTitle').value.trim();
+    if (!r.title) { toast('Give the recipe a name.'); $('#reTitle').focus(); return; }
+    r.servings = Math.max(0, Number($('#reServ').value) || 0); r.prep = Math.max(0, Number($('#rePrep').value) || 0); r.cook = Math.max(0, Number($('#reCook').value) || 0);
+    r.source = $('#reSrc').value.trim(); r.notes = $('#reNotes').value.trim();
+    r.ingredients = r.ingredients.filter((i) => i.name.trim()).map((i) => ({ ...i, name: i.name.trim(), qty: i.qty.trim(), note: (i.note || '').trim() }));
+    r.steps = r.steps.filter((s) => s.text.trim()).map((s) => ({ ...s, text: s.text.trim(), timer: Number(s.timer) || '' }));
+    r.updatedAt = Date.now();
+    try {
+      if (re.photo) {
+        const old = r.photoId;
+        await DB.putPhoto({ ...re.photo, entryId: 'recipe:' + r.id });
+        r.photoId = re.photo.id;
+        if (old) { DB.del('photos', old).catch(() => {}); forgetPhoto(old); }
+      }
+      await DB.put('recipes', r);
+    } catch (_) { toast('The recipe couldn’t be saved. Try again.', 3500); return; }
+    const i = recipes.findIndex((x) => x.id === r.id); if (i >= 0) recipes[i] = r; else recipes.push(r);
+    re = null; toast('Recipe saved'); go(`#/recipe/${r.id}`);
+  }
+  // Copy steps or ingredients from another recipe
+  function openRecipeCopy(what) {
+    const others = recipes.filter((x) => x.id !== re.r.id && (x[what] || []).length);
+    if (!others.length) { toast(`No other recipes with ${what} yet.`); return; }
+    let dlg = $('#rcDlg');
+    if (!dlg) {
+      document.body.insertAdjacentHTML('beforeend', `<dialog id="rcDlg" class="mini w-dlg"><form method="dialog" id="rcForm"><header class="ed-head"><button type="button" class="btn btn-ghost" data-rc="cancel">Cancel</button><h2 id="rcTitle">Copy</h2><button type="submit" class="btn btn-primary" id="rcAdd">Add</button></header><div class="mini-body" id="rcBody"></div></form></dialog>`);
+      dlg = $('#rcDlg');
+      dlg.addEventListener('click', (ev) => { const b = ev.target.closest('[data-rc]'); if (!b) return; if (b.dataset.rc === 'cancel') dlg.close(); if (b.dataset.rc === 'pick') { dlg.dataset.from = b.dataset.id; drawCopy(); } if (b.dataset.rc === 'all') { $$('#rcBody input[type=checkbox]').forEach((c) => { c.checked = true; }); } });
+      $('#rcForm').addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        const src = rById(dlg.dataset.from), w = dlg.dataset.what; if (!src) return;
+        const picked = $$('#rcBody input[type=checkbox]:checked').map((c) => src[w][Number(c.value)]).filter(Boolean).map((x) => ({ ...x, id: uid() }));
+        if (!picked.length) { toast('Tick at least one.'); return; }
+        const list = re.r[w].filter((x) => (w === 'steps' ? x.text.trim() : x.name.trim()));
+        re.r[w] = [...list, ...picked]; re.dirty = true;
+        (w === 'steps' ? drawReSteps : drawReIngr)();
+        dlg.close(); toast(`Added ${plural(picked.length, w === 'steps' ? 'step' : 'ingredient')} from ${src.title}`);
+      });
+    }
+    dlg.dataset.what = what; dlg.dataset.from = others.length === 1 ? others[0].id : '';
+    const drawCopy = () => {
+      const src = rById(dlg.dataset.from), w = dlg.dataset.what;
+      $('#rcTitle').textContent = w === 'steps' ? 'Copy steps' : 'Copy ingredients';
+      $('#rcAdd').disabled = !src;
+      $('#rcBody').innerHTML = !src
+        ? `<p class="muted">Choose the recipe to copy from:</p><div class="rc-list">${others.map((x) => `<button type="button" class="rc-r" data-rc="pick" data-id="${x.id}"><span class="r-img sm">${rPhoto(x, 'thumb')}</span><span><b>${esc(x.title)}</b><small>${plural(x[w].length, w === 'steps' ? 'step' : 'ingredient')}</small></span></button>`).join('')}</div>`
+        : `<p class="muted">From <b>${esc(src.title)}</b>. Tick what to add; it goes at the end, and you can drag it into place. ${others.length > 1 ? '<button type="button" class="linkbtn" data-rc="pick" data-id="">Choose another recipe</button>' : ''}</p>
+          <div class="row-tight"><button type="button" class="linkbtn" data-rc="all">Tick all</button></div>
+          <div class="rc-items">${src[w].map((x, j) => `<label class="rc-item"><input type="checkbox" value="${j}">${w === 'steps' ? `<span class="rs-n">${j + 1}</span><span>${esc(x.text)}</span>` : `<span>${ingrLine(x)}</span>`}</label>`).join('')}</div>`;
+      hydrate($('#rcBody'));
+    };
+    drawCopy();
+    dlg.showModal();
+  }
+
+  // Cooking mode: big steps, ingredients at hand, timers, and the screen stays on
+  const ck = { r: null, i: 0, wake: null, factor: 1 };
+  function openCooking(r) {
+    ck.r = r; ck.i = 0;
+    const serv = state.rServ && state.rServ.id === r.id ? state.rServ.n : r.servings;
+    ck.factor = r.servings && serv ? serv / r.servings : 1;
+    let el = $('#cookMode');
+    if (!el) {
+      document.body.insertAdjacentHTML('beforeend', '<div id="cookMode" class="cook" role="dialog" aria-modal="true" aria-label="Cooking mode" hidden></div>');
+      el = $('#cookMode');
+      el.addEventListener('click', (ev) => {
+        const b = ev.target.closest('[data-ck]'); if (!b) return;
+        const a = b.dataset.ck;
+        if (a === 'close') closeCooking();
+        if (a === 'next') { ck.i = Math.min(ck.i + 1, ck.r.steps.length); drawCooking(); }
+        if (a === 'prev') { ck.i = Math.max(ck.i - 1, 0); drawCooking(); }
+        if (a === 'ingr') el.classList.toggle('show-ingr');
+        if (a === 'timer') startTimer(Number(b.dataset.min), b.dataset.label);
+        if (a === 'cooked') { logCooked(ck.r.id); closeCooking(); }
+      });
+      let sx = null;
+      el.addEventListener('touchstart', (ev) => { sx = ev.touches[0].clientX; }, { passive: true });
+      el.addEventListener('touchend', (ev) => { if (sx == null) return; const dx = ev.changedTouches[0].clientX - sx; sx = null; if (Math.abs(dx) > 60) { ck.i = clamp(ck.i + (dx < 0 ? 1 : -1), 0, ck.r.steps.length); drawCooking(); } });
+    }
+    el.hidden = false; document.body.classList.add('story-open');
+    drawCooking();
+    if (navigator.wakeLock) navigator.wakeLock.request('screen').then((l) => { ck.wake = l; }).catch(() => {});
+  }
+  function closeCooking() {
+    const el = $('#cookMode'); if (el) { el.hidden = true; el.classList.remove('show-ingr'); }
+    document.body.classList.remove('story-open');
+    if (ck.wake) { ck.wake.release().catch(() => {}); ck.wake = null; }
+    ck.r = null;
+  }
+  function drawCooking() {
+    const r = ck.r, n = r.steps.length, done = ck.i >= n, s = r.steps[ck.i], m = s ? stepMinutes(s) : 0;
+    $('#cookMode').innerHTML = `
+      <header class="ck-top"><button type="button" class="btn btn-ghost" data-ck="close">✕ Close</button><b>${esc(r.title)}</b><button type="button" class="btn btn-line" data-ck="ingr">Ingredients</button></header>
+      <aside class="ck-ingr"><h3>Ingredients</h3><ul>${(r.ingredients || []).map((i) => `<li><label><input type="checkbox"><span>${ingrLine(i, ck.factor)}</span></label></li>`).join('')}</ul></aside>
+      <main class="ck-main">${done ? `<p class="ck-n">All done</p><h2 class="ck-text">Enjoy your ${esc(r.title)}! 🍽️</h2><button type="button" class="btn btn-primary ck-big" data-ck="cooked">🍳 Mark as cooked today</button>`
+        : `<p class="ck-n">Step ${ck.i + 1} of ${n}</p><h2 class="ck-text">${esc(s.text).replace(/\n/g, '<br>')}</h2>${m ? `<button type="button" class="btn btn-primary ck-big" data-ck="timer" data-min="${m}" data-label="Step ${ck.i + 1}">⏱ Start ${fmtMins(m)} timer</button>` : ''}`}
+      </main>
+      <footer class="ck-foot"><button type="button" class="btn btn-line" data-ck="prev"${ck.i === 0 ? ' disabled' : ''}>← Back</button>
+        <span class="ck-dots">${r.steps.map((_, j) => `<i class="${j === ck.i ? 'on' : j < ck.i ? 'done' : ''}"></i>`).join('')}</span>
+        <button type="button" class="btn btn-primary" data-ck="next"${done ? ' disabled' : ''}>${ck.i === n - 1 ? 'Finish' : 'Next →'}</button></footer>`;
+    timersBar();
+  }
+  document.addEventListener('keydown', (ev) => {
+    if (!ck.r || $('#cookMode').hidden) return;
+    if (ev.key === 'Escape') closeCooking();
+    if (ev.key === 'ArrowRight' || ev.key === ' ') { ev.preventDefault(); ck.i = Math.min(ck.i + 1, ck.r.steps.length); drawCooking(); }
+    if (ev.key === 'ArrowLeft') { ck.i = Math.max(ck.i - 1, 0); drawCooking(); }
+  });
+  // Kitchen timers (keep running while you move around the app)
+  const timers = [];
+  let timerTick = null;
+  function startTimer(min, label) {
+    timers.push({ id: uid(), label: label || 'Timer', end: Date.now() + min * 60000, total: min * 60000, rang: false });
+    if (!timerTick) timerTick = setInterval(timersBar, 500);
+    timersBar(); toast(`Timer started: ${fmtMins(min)}`);
+  }
+  function beep() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext; const ac = new AC();
+      [0, 0.45, 0.9].forEach((t) => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = 880; o.connect(g); g.connect(ac.destination); g.gain.setValueAtTime(0.0001, ac.currentTime + t); g.gain.exponentialRampToValueAtTime(0.3, ac.currentTime + t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + t + 0.35); o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.4); });
+    } catch (_) { /* no sound available */ }
+    if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+  }
+  function timersBar() {
+    let bar = $('#timerBar');
+    if (!timers.length) { if (bar) bar.remove(); clearInterval(timerTick); timerTick = null; return; }
+    if (!bar) { document.body.insertAdjacentHTML('beforeend', '<div id="timerBar" class="timer-bar" role="status" aria-live="polite"></div>'); bar = $('#timerBar'); bar.addEventListener('click', (ev) => { const b = ev.target.closest('[data-tm]'); if (!b) return; const i = timers.findIndex((t) => t.id === b.dataset.tm); if (i >= 0) timers.splice(i, 1); timersBar(); }); }
+    const now = Date.now();
+    bar.innerHTML = timers.map((t) => {
+      const left = Math.max(0, t.end - now);
+      if (!left && !t.rang) { t.rang = true; beep(); toast(`⏰ ${t.label}: time’s up!`, 6000); }
+      const s = Math.ceil(left / 1000);
+      return `<span class="tm${left ? '' : ' done'}" style="--p:${((1 - left / t.total) * 100).toFixed(1)}%"><b>${left ? `${Math.floor(s / 60)}:${pad(s % 60)}` : 'Done!'}</b><small>${esc(t.label)}</small><button type="button" data-tm="${t.id}" aria-label="Stop timer">✕</button></span>`;
+    }).join('');
+  }
+  async function logCooked(id) {
+    const r = rById(id); if (!r) return;
+    r.cooked = [...(r.cooked || []), D.today()]; r.updatedAt = Date.now();
+    await DB.put('recipes', r);
+    toast(`Nice! Logged ${r.title} for today.`, 3000);
+    if (/^#\/recipe\//.test(location.hash)) route();
+  }
+  async function recipeAction(act, b) {
+    const r = rById(b.dataset.id);
+    if (act === 'recipe-print') { window.print(); return; }
+    if (act === 'recipe-timer') { startTimer(Number(b.dataset.min), b.dataset.label); return; }
+    if (!r) return;
+    if (act === 'recipe-cook') { if (!(r.steps || []).length) { toast('Add some steps first.'); return; } openCooking(r); }
+    if (act === 'recipe-serv') { const cur = state.rServ && state.rServ.id === r.id ? state.rServ.n : r.servings; state.rServ = { id: r.id, n: clamp(cur + Number(b.dataset.d), 1, 99) }; const y = window.scrollY; route(); window.scrollTo(0, y); }
+    if (act === 'recipe-fav') { r.fav = !r.fav; await DB.put('recipes', r); const y = window.scrollY; route(); window.scrollTo(0, y); }
+    if (act === 'recipe-cooked') logCooked(r.id);
+    if (act === 'recipe-delete') {
+      if (!confirm(`Delete the recipe “${r.title}”? This can’t be undone.`)) return;
+      await DB.del('recipes', r.id); if (r.photoId) { DB.del('photos', r.photoId).catch(() => {}); forgetPhoto(r.photoId); }
+      recipes = recipes.filter((x) => x.id !== r.id); toast('Recipe deleted'); go('#/recipes');
+    }
+  }
+  view.addEventListener('change', (ev) => { const c = ev.target.closest('.ri-list input[type=checkbox]'); if (c) c.closest('li').classList.toggle('got', c.checked); });
+  window.addEventListener('hashchange', () => { if (re && re.dirty && !/^#\/recipe\//.test(location.hash)) re = null; });
+
   // ---------- Global actions ----------
   document.addEventListener('click', async (ev) => {
     const h = ev.target.closest('[data-hero-act]');
@@ -4645,6 +5197,7 @@
     if (act === 'fav' || act === 'pin') toggleFlag(b.dataset.id, act === 'fav' ? 'fav' : 'pinned');
     if (act === 'quick') openQuick();
     if (act.startsWith('watch-')) watchAction(act, b);
+    if (act.startsWith('recipe-')) recipeAction(act, b);
     if (act === 'tut-zoom') { lbState.ids = []; lb.classList.add('single'); $('#lbCount').textContent = ''; $('#lbImg').src = b.dataset.src; lb.showModal(); }
     if (act === 'save-cid') {
       const v = ($('#gCid').value || '').trim();
@@ -4697,7 +5250,7 @@
     }
   });
   document.addEventListener('keydown', (ev) => {
-    if (document.querySelector('dialog[open]') || editor.open || lb.open || personDlg.open || placeDlg.open || passDlg.open || quickDlg.open || tagDlg.open || capsuleDlg.open || importDlg.open || !storyEl.hidden || !lockEl.hidden || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    if (document.querySelector('dialog[open]') || (document.getElementById('cookMode') && !document.getElementById('cookMode').hidden) || editor.open || lb.open || personDlg.open || placeDlg.open || passDlg.open || quickDlg.open || tagDlg.open || capsuleDlg.open || importDlg.open || !storyEl.hidden || !lockEl.hidden || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || ev.metaKey || ev.ctrlKey || ev.altKey) return;
     if (ev.key === 'n' && !pe.on) { ev.preventDefault(); openEditor(); }
     if (hero.el && (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') && hero.el.contains(document.activeElement)) heroShow(hero.i + (ev.key === 'ArrowRight' ? 1 : -1));
   });
@@ -4711,7 +5264,8 @@
 
   // ---------- Start ----------
   async function loadAll() {
-    const [ents, ppl, pls, tgs, wl] = await Promise.all([DB.allEntries(), DB.allPeople(), DB.allPlaces(), DB.allTags(), DB.allWatch()]);
+    const [ents, ppl, pls, tgs, wl, rcp] = await Promise.all([DB.allEntries(), DB.allPeople(), DB.allPlaces(), DB.allTags(), DB.allWatch(), DB.allRecipes()]);
+    recipes = rcp.map((r) => ({ ...r, ingredients: r.ingredients || [], steps: r.steps || [], cats: r.cats || [], cooked: r.cooked || [] }));
     watch = wl.map((w) => ({ ...w, info: w.info || {}, history: w.history || [] }));
     const today = D.today(), all = ents.map(norm);
     capsules = all.filter((e) => e.capsule && e.capsule > today);   // sealed letters stay out of the journal until they open
@@ -4766,6 +5320,6 @@
     }
   }
   // Exposed for testing in the console
-  window.__journal = { DB, get entries() { return entries; }, get watch() { return watch; }, get people() { return people; }, get places() { return places; }, get tags() { return tags; }, readExif, get locked() { return !CRYPT.key && lockOn(); }, reload: async () => { await loadAll(); route(); } };
+  window.__journal = { DB, get entries() { return entries; }, get watch() { return watch; }, get recipes() { return recipes; }, get people() { return people; }, get places() { return places; }, get tags() { return tags; }, readExif, get locked() { return !CRYPT.key && lockOn(); }, reload: async () => { await loadAll(); route(); } };
   start();
 })();
